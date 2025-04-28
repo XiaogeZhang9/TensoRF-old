@@ -1,13 +1,13 @@
 
-dataset_name = own_data
-datadir = ./data/xxx
-expname =  tensorf_xxx_VM
+dataset_name = tankstemple
+datadir = ./synthetic_wpc_1024/house
+expname =  tensorf_VM_wpc_1024_view100_house
 basedir = ./log
 
-n_iters = 30000
+n_iters = 300000
 batch_size = 4096
 
-N_voxel_init = 2097156 # 128**3
+N_voxel_init = 2097152 # 128**3
 N_voxel_final = 27000000 # 300**3
 upsamp_list = [2000,3000,4000,5500,7000]
 update_AlphaMask_list = [2000,4000]
