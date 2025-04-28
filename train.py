@@ -123,6 +123,7 @@ def reconstruction(args):
     # tensorVM, renderer = init_parameters(args, train_dataset.scene_bbox.to(device), reso_list[0])
     aabb = train_dataset.scene_bbox.to(device)
     reso_cur = N_to_reso(args.N_voxel_init, aabb)
+    import ipdb; ipdb.set_trace()
     nSamples = min(args.nSamples, cal_n_samples(reso_cur,args.step_ratio))
 
     if args.ckpt is not None:

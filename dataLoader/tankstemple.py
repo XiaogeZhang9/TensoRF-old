@@ -85,7 +85,7 @@ def gen_path(pos_gen, at=(0, 0, 0), up=(0, -1, 0), frames=180):
 
 class TanksTempleDataset(Dataset):
     """NSVF Generic Dataset."""
-    def __init__(self, datadir, split='train', downsample=1.0, wh=[1920,1080], is_stack=False):
+    def __init__(self, datadir, split='train', downsample=1.0, wh=[1024,1024], is_stack=False):
         self.root_dir = datadir
         self.split = split
         self.is_stack = is_stack
@@ -94,7 +94,7 @@ class TanksTempleDataset(Dataset):
         self.define_transforms()
 
         self.white_bg = True
-        self.near_far = [0.01,6.0]
+        self.near_far = [0.01, 2000] #[0.01,6.0]
         self.scene_bbox = torch.from_numpy(np.loadtxt(f'{self.root_dir}/bbox.txt')).float()[:6].view(2,3)*1.2
 
         self.blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
@@ -114,7 +114,7 @@ class TanksTempleDataset(Dataset):
     def read_meta(self):
 
         self.intrinsics = np.loadtxt(os.path.join(self.root_dir, "intrinsics.txt"))
-        self.intrinsics[:2] *= (np.array(self.img_wh)/np.array([1920,1080])).reshape(2,1)
+        self.intrinsics[:2] *= (np.array(self.img_wh)/np.array([1024,1024])).reshape(2,1)
         pose_files = sorted(os.listdir(os.path.join(self.root_dir, 'pose')))
         img_files  = sorted(os.listdir(os.path.join(self.root_dir, 'rgb')))
 
@@ -214,3 +214,15 @@ class TanksTempleDataset(Dataset):
             sample = {'rays': rays,
                       'rgbs': img}
         return sample
+    
+class DistillPlane(Dataset):
+    def __init__(self, shape=(800,800,800), N_S=206, n_c=27):
+        self.shape = shape
+        self.N_S = N_S
+        self.n_c = n_c
+    
+    def __len__(self):
+        return self.shape[0] * self.shape[1] * self.shape[2]
+    
+    def __getitem__(self, idx):
+        return idx

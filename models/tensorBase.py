@@ -535,7 +535,6 @@ class TensorBase(torch.nn.Module):
 
 
     def forward(self, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
-        # import ipdb; ipdb.set_trace()
         # sample points
         viewdirs = rays_chunk[:, 3:6]
         if ndc_ray:
@@ -607,6 +606,7 @@ class TensorBase(torch.nn.Module):
         # For points that contribute significantly, compute RGB colors
         if app_mask.any():
             # Get appearance features
+            import ipdb; ipdb.set_trace()
             app_features = self.compute_appfeature(xyz_sampled[app_mask]) #[N,3]
             # Render RGB values using the chosen rendering module
             valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features) #[N,3]
