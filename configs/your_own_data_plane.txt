@@ -5,7 +5,7 @@ expname =  tensorf_VM_wpc_1024_view100_house_lr0.02
 basedir = ./log_triplane
 
 n_iters = 600
-batch_size = 4096
+batch_size = 204800
 H = 800
 W = 800
 N_S = 206
