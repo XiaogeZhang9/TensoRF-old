@@ -156,7 +156,7 @@ def reconstruction(args):
         torch.nn.Parameter(torch.randn((800, 800), device=device, requires_grad=True)) for _ in range(3)
     ])
     # optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99))
-    optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99), eps=1e-8, lr=0.0001)
+    optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99), eps=1e-8, lr=args.lr_init)
         # Log initial values for debugging
     # print(triplanes[0].grad)
     # initial_values = [p.grad for p in triplanes]
@@ -224,11 +224,10 @@ def reconstruction(args):
             break
     for iteration in pbar:
         for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Planes"):
-            loss_sigma = tensorf.distill_color_total(batch, triplanes, rays_o_unique, H=800, W=800, N_S=206, n_c=27)
+            loss_sigma = tensorf.distill_color_total(batch, triplanes, rays_o_unique, H=args.H, W=args.W, N_S=args.N_S, n_c=27)
             optimizer.zero_grad()
             loss_sigma.backward()
             optimizer.step()
-            print(triplanes[0].grad.max().detach().item())
             # Save triplanes state
             triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
             summary_writer.add_scalar('train/loss_color', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))

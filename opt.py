@@ -130,6 +130,12 @@ def config_parser(cmd=None):
                         help='N images to vis')
     parser.add_argument("--vis_every", type=int, default=10000,
                         help='frequency of visualize the image')
+    parser.add_argument("--H", type=int, default=800,
+                        help='height of the image')
+    parser.add_argument("--W", type=int, default=800,
+                        help='width of the image')
+    parser.add_argument("--N_S", type=int, default=206,
+                        help='number of samples')
     if cmd is not None:
         return parser.parse_args(cmd)
     else:

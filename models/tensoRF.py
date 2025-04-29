@@ -308,14 +308,13 @@ class TensorVMSplit(TensorBase):
 
         # Apply color coefficients
         color_chunk = torch.matmul(base_dir, color_coef.permute(0, 2, 1)) # [B,R,3]
-
+        color_chunk = torch.sigmoid(color_chunk)
         # Compute partial outer product for this chunk
         # sigma_chunk = torch.sum(x_image[i,:N_S]* y_image[j,:N_S]* z_image[k,:N_S], dim=-1)
         coords = coords_expanded.repeat(1,ray_size,1).reshape(-1,3)
         with torch.no_grad():
             app_features = self.compute_appfeature(coords)
             color_gt = self.renderModule(coords, dirs.reshape(-1,3), app_features).reshape(batch_size,ray_size,3)
-
         loss_func = torch.nn.MSELoss()
         loss_sigma = loss_func(color_chunk, color_gt)
         return loss_sigma
