@@ -80,14 +80,14 @@ def render_test(args):
     if args.ckpt_tri_color is not None:
         triplanes_color = torch.load(args.ckpt_tri_color, map_location=device)
         triplanes = torch.nn.ParameterList([
-            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:]].clone(), dim=1))
+            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:].clone()], dim=1))
             for i in range(len(triplanes))
         ])
     if args.ckpt_tri is not None:
         triplanes_loaded = torch.load(args.ckpt_tri, map_location=device)
         triplanes = torch.nn.ParameterList([torch.nn.Parameter(triplanes_loaded[i]) for i in range(len(triplanes_loaded))])
         
-    logfolder = os.path.dirname(args.ckpt_tri)
+    logfolder = os.path.dirname(args.ckpt_tri_color)
     if args.render_train:
         os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
         train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=True)
@@ -97,7 +97,7 @@ def render_test(args):
 
     if args.render_test:
         os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
-        PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=206, n_c=27, 
+        PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=-1, N_samples=-1, 
                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         
@@ -205,7 +205,7 @@ def reconstruction(args):
     if args.ckpt_tri_color is not None:
         triplanes_color = torch.load(args.ckpt_tri_color, map_location=device)
         triplanes = torch.nn.ParameterList([
-            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:]].clone(), dim=1))
+            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:].clone()], dim=1))
             for i in range(len(triplanes))
         ])
     if args.ckpt_tri is not None:
@@ -250,10 +250,9 @@ def reconstruction(args):
             summary_writer.add_scalar('train/loss_color', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
         initial_values = [p.data.mean().item() for p in triplanes]
         print(f"Initial triplane mean values: {initial_values}")        
-        torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
-        
         if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
-            PSNRs_test = evaluation_distill(train_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
+            torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
+            PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
                                         savePath=f'{logfolder}/imgs_train_all/', N_vis=args.N_vis, N_samples=nSamples, 
                                         white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_')
             print(f'======> {args.expname} train all psnr: {np.mean(PSNRs_test)} <========================')
