@@ -319,6 +319,55 @@ class TensorVMSplit(TensorBase):
         loss_sigma = loss_func(color_chunk, color_gt)
         return loss_sigma
     
+    def distill_color_appfeat(self, idx, triplanes, rays_o_unique,H, W, N_S, n_c):
+        batch_size = idx.shape[0]
+        ray_size = rays_o_unique.shape[0]
+        i = (idx % (H*H)) // H
+        j = (idx % (H*H)) % H
+        k = idx // (H*H)
+        N = (W-N_S)//n_c
+
+        # x_image, y_image, z_image = triplanes[0], triplanes[1], triplanes[2]
+        x_feats = triplanes[0][i]  # Shape: [batch_size, N_S+n_c*3]
+        y_feats = triplanes[1][j]  # Shape: [batch_size, N_S+n_c*3]
+        z_feats = triplanes[2][k]  # Shape: [batch_size, N_S+n_c*3]
+        
+        # Reshape inputs for batch processing
+        x_sigma = x_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
+        y_sigma = y_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
+        z_sigma = z_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
+        
+        # Compute product across N dimension for all components at once
+        color_coef = torch.einsum('bcn,bcn,bcn->bc', x_sigma, y_sigma, z_sigma) # [B, n_c]
+        # color_coef = color_coef.reshape(batch_size, 3, 9) # [B, 3, 9]
+
+        # # color_coef = torch.zeros((batch_size,n_c), device=x_sigma.device)
+        # # for p in range(n_c):
+        # #     color_coef[:,p] = torch.sum(x_sigma[i,p*N:(p+1)*N]*y_sigma[j,p*N:(p+1)*N]*z_sigma[k,p*N:(p+1)*N], dim=1) # [B,27]
+        # # color_coef = color_coef.reshape(batch_size,3,9) # [B,3,9]        # Subtract each coordinate from all rays to get directions
+        # coords_expanded = self.normalized_coors[i,j,k].reshape(-1,1,3)  # [B,1,3]
+        # rays_expanded = rays_o_unique.reshape(1,-1,3)  # [1,R,3]
+        # dirs = coords_expanded - rays_expanded  # [B,R,3]
+        
+        # dirs = dirs / torch.norm(dirs, dim=-1, keepdim=True)
+        # base_dir = eval_sh_bases(2, dirs.reshape(-1,3)).reshape(batch_size,ray_size,9)  # [B,R,9]
+
+        # # Apply color coefficients
+        # color_chunk = torch.matmul(base_dir, color_coef.permute(0, 2, 1)) # [B,R,3]
+        # color_chunk = torch.sigmoid(color_chunk)
+        # Compute partial outer product for this chunk
+        # sigma_chunk = torch.sum(x_image[i,:N_S]* y_image[j,:N_S]* z_image[k,:N_S], dim=-1)
+        # coords = coords_expanded.repeat(1,ray_size,1).reshape(-1,3)
+        # import ipdb; ipdb.set_trace()
+        with torch.no_grad():
+            app_features = self.compute_appfeature(self.normalized_coors[i,j,k])
+            
+        # print(app_features.min().item(), app_features.max().item())
+            # color_gt = self.renderModule(coords, dirs.reshape(-1,3), app_features).reshape(batch_size,ray_size,3)
+        loss_func = torch.nn.MSELoss()
+        loss_sigma = loss_func(color_coef, app_features)
+        return loss_sigma
+    
     def calculate_density_block(self, x_basis, y_basis, z_basis, i, j, k, chunk_size, H):
         # Compute outer products in chunks to reduce memory
         sigma = torch.zeros((H,H,H), device=x_basis.device)
@@ -419,6 +468,20 @@ class TensorVMSplit(TensorBase):
         ], dim=0)
         return local_volume_indices, x_indices_left, y_indices_left, z_indices_left, x_indices_right, y_indices_right, z_indices_right
     
+    def get_local_volume_indices_nearest(self, valid_xyz):
+        x, y, z = valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2]
+        x_indices_right, y_indices_right, z_indices_right = torch.searchsorted(self.x_coords, valid_xyz[:, 0], right=True), torch.searchsorted(self.y_coords, valid_xyz[:, 1], right=True), torch.searchsorted(self.z_coords, valid_xyz[:, 2], right=True)
+        x_indices_right, y_indices_right, z_indices_right = torch.clamp(x_indices_right, 0, 799), torch.clamp(y_indices_right, 0, 799), torch.clamp(z_indices_right, 0, 799)
+        
+        x_indices_left, y_indices_left, z_indices_left = x_indices_right - 1, y_indices_right - 1, z_indices_right - 1
+        x_indices_left, y_indices_left, z_indices_left = torch.clamp(x_indices_left, 0, 799), torch.clamp(y_indices_left, 0, 799), torch.clamp(z_indices_left, 0, 799)
+        x_indices = torch.where(x-self.x_coords[x_indices_left] < self.x_coords[x_indices_right]-x, x_indices_left, x_indices_right)
+        y_indices = torch.where(y-self.y_coords[y_indices_left] < self.y_coords[y_indices_right]-y, y_indices_left, y_indices_right)
+        z_indices = torch.where(z-self.z_coords[z_indices_left] < self.z_coords[z_indices_right]-z, z_indices_left, z_indices_right)
+        local_volume_indices = torch.stack([x_indices, y_indices, z_indices], dim=1).repeat(8,1)
+        return local_volume_indices, x_indices_left, y_indices_left, z_indices_left, x_indices_right, y_indices_right, z_indices_right
+        
+        
     def trilinear_interp_coords(self, V, x, y, z, x_left, y_left, z_left, x_right, y_right, z_right):
         """
         V: tensor of shape [2, 2, 2] with values at the 8 voxel corners
@@ -469,6 +532,383 @@ class TensorVMSplit(TensorBase):
         #     sigma_chunk[idx] = torch.sum(x_image[i]* y_image[j]* z_image[k], dim=-1)
 
         return sigma_chunk
+    
+    def forward_distill_sigma(self, triplanes, N_S, n_c, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
+        # import ipdb; ipdb.set_trace()
+        # sample points
+        viewdirs = rays_chunk[:, 3:6]
+        if ndc_ray:
+            xyz_sampled, z_vals, ray_valid = self.sample_ray_ndc(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+            
+            # Calculate distances between adjacent samples along the ray
+            # z_vals contains the distance of each sample point from ray origin
+            # We compute differences between consecutive z values to get segment lengths
+            # For the last sample, we append a zero distance
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+            
+            # In NDC space, we need to account for ray direction normalization
+            rays_norm = torch.norm(viewdirs, dim=-1, keepdim=True)  # Length of direction vectors
+            dists = dists * rays_norm  # Scale distances by ray length
+            viewdirs = viewdirs / rays_norm  # Normalize directions to unit vectors
+            
+        else:
+            # For regular world space coordinates
+            # Sample points along each ray using regular sampling strategy
+            xyz_sampled, z_vals, ray_valid = self.sample_ray(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+            
+            # Calculate distances between samples, same as in NDC case
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+            
+        # Reshape viewing directions to match sampled points
+        # Each sampled point needs its corresponding viewing direction for rendering
+        # -1 preserves total size, 1 adds a new dimension, 3 is for xyz coordinates
+        # expand replicates the directions for each sample along the ray
+        viewdirs = viewdirs.view(-1, 1, 3).expand(xyz_sampled.shape)
+        if self.alphaMask is not None:
+            # Sample alpha values for valid ray points from the alpha mask volume
+            alphas = self.alphaMask.sample_alpha(xyz_sampled[ray_valid])
+            
+            # Create mask for points with non-zero alpha
+            alpha_mask = alphas > 0
+            
+            # Start with invalid rays
+            ray_invalid = ~ray_valid
+            
+            # For valid rays, mark as invalid if alpha is zero
+            ray_invalid[ray_valid] |= (~alpha_mask)
+            
+            # Update valid ray mask
+            ray_valid = ~ray_invalid
+
+        # Initialize empty tensors for density (sigma) and color (rgb) for all sampled points
+        sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)  # Shape: [N_rays, N_samples]
+        rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)  # Shape: [N_rays, N_samples, 3]
+        # For valid ray points, compute density features and convert to actual density values
+        if ray_valid.any():
+            # Normalize coordinates to [-1,1] range for grid sampling
+            # xyz_sampled = self.normalize_coord(xyz_sampled)
+            valid_xyz =xyz_sampled[ray_valid]
+
+            local_volume_indices, x_indices_left, y_indices_left, z_indices_left, x_indices_right, y_indices_right, z_indices_right = self.get_local_volume_indices(valid_xyz)
+            sigma_chunk = self.compute_densityfeature_distill(triplanes, valid_xyz, local_volume_indices, N_S)
+            # sigma_chunk = sigma_chunk.reshape(-1, 1)
+            sigma_pred = self.trilinear_interp_coords(sigma_chunk, valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2], 
+                                         self.x_coords[x_indices_left], self.y_coords[y_indices_left], self.z_coords[z_indices_left], 
+                                         self.x_coords[x_indices_right], self.y_coords[y_indices_right], self.z_coords[z_indices_right])
+            # Get density features for valid points
+            # sigma_feature = self.compute_densityfeature(xyz_sampled[ray_valid]) # factorize 3d to plane and line
+            # Convert features to density values 
+            validsigma = self.feature2density(sigma_pred)
+            # Assign computed densities back to valid points
+            sigma[ray_valid] = validsigma
+        # Convert raw density (sigma) to alpha values and compute weights for volume rendering
+        alpha, weight, bg_weight = raw2alpha(sigma, dists * self.distance_scale)
+
+        # Only compute colors for points with significant contribution to final image
+        app_mask = weight > self.rayMarch_weight_thres
+        N = (triplanes[0].shape[1] - N_S) // n_c
+        # For points that contribute significantly, compute RGB colors
+        if app_mask.any():
+            xyz_sampled = self.normalize_coord(xyz_sampled)
+            # Get appearance features
+            app_features = self.compute_appfeature(xyz_sampled[app_mask]) #[N,3]
+            # Render RGB values using the chosen rendering module
+            valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features) #[N,3]
+            # Assign computed colors back to contributing points
+            rgb[app_mask] = valid_rgbs #[B,R,3]
+            # valid_xyz_color = xyz_sampled[app_mask]
+            # local_volume_indices_color, x_indices_left_color, y_indices_left_color, z_indices_left_color, x_indices_right_color, y_indices_right_color, z_indices_right_color = self.get_local_volume_indices(valid_xyz_color)
+            # x_image, y_image, z_image = triplanes[0][:,N_S:], triplanes[1][:,N_S:], triplanes[2][:,N_S:]
+            # color_coef = torch.zeros((8*valid_xyz_color.shape[0], n_c), device=valid_xyz_color.device) # [8*B, 27]
+            # local_volume_indices_color = local_volume_indices_color.reshape(-1, 3)
+            # # Vectorize the computation using einsum instead of nested loops
+            # # Reshape inputs for batch processing
+            # x_feats = x_image[local_volume_indices_color[:,0]] # [B, N*n_c]
+            # y_feats = y_image[local_volume_indices_color[:,1]] # [B, N*n_c] 
+            # z_feats = z_image[local_volume_indices_color[:,2]] # [B, N*n_c]
+            
+            # # Reshape to separate N and n_c dimensions
+            # x_feats = x_feats.reshape(-1, n_c, N) # [B, n_c, N]
+            # y_feats = y_feats.reshape(-1, n_c, N) # [B, n_c, N]
+            # z_feats = z_feats.reshape(-1, n_c, N) # [B, n_c, N]
+            
+            # # Compute product across N dimension for all components at once
+            # color_coef = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [B, n_c]
+            # # for idx, (i, j, k) in enumerate(local_volume_indices_color):
+            # #     for p in range(n_c):
+            # #         color_coef[idx, p] = torch.sum(x_image[i,p*N:(p+1)*N]* y_image[j,p*N:(p+1)*N]* z_image[k,p*N:(p+1)*N], dim=-1)
+            # coords_expanded = self.coords[local_volume_indices_color[:,0], local_volume_indices_color[:,1], local_volume_indices_color[:,2]] #[8*B, 3]
+            # dirs_expanded = (coords_expanded.reshape(8, -1, 3) - rays_chunk[0, :3].reshape(1,-1,3)).reshape(-1,3) # [8xB, 3] # same camera for the batch
+            # base_dir = eval_sh_bases(2, dirs_expanded.reshape(-1, 3)) # [8xB, 9]
+            # app_chunk = torch.einsum('bi,bji->bj', base_dir, color_coef.reshape(-1, 3, 9)) # [8xB, 3]
+            # valid_rgbs = self.trilinear_interp_coords(app_chunk, valid_xyz_color[:, 0], valid_xyz_color[:, 1], valid_xyz_color[:, 2], 
+            #                              self.x_coords[x_indices_left_color], self.y_coords[y_indices_left_color], self.z_coords[z_indices_left_color], 
+            #                              self.x_coords[x_indices_right_color], self.y_coords[y_indices_right_color], self.z_coords[z_indices_right_color])
+            
+            # # # Get appearance features
+            # # app_features = self.compute_appfeature(xyz_sampled[app_mask])
+            # # # Render RGB values using the chosen rendering module
+            # # valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
+            
+            # # Assign computed colors back to contributing points
+            # rgb[app_mask] = valid_rgbs
+        # Compute final pixel colors through volume rendering equation
+        acc_map = torch.sum(weight, -1)  # Accumulated opacity along each ray
+        rgb_map = torch.sum(weight[..., None] * rgb, -2)  # Weighted sum of colors
+
+        # Handle background color - either white or random during training
+        if white_bg or (is_train and torch.rand((1,))<0.5):
+            rgb_map = rgb_map + (1. - acc_map[..., None])  # Add white background weighted by remaining transparency
+
+        # Ensure output colors are in valid range
+        rgb_map = rgb_map.clamp(0,1)
+
+        # Compute depth map without tracking gradients
+        with torch.no_grad():
+            depth_map = torch.sum(weight * z_vals, -1)  # Expected depth
+            depth_map = depth_map + (1. - acc_map) * rays_chunk[..., -1]  # Add background depth
+
+        return rgb_map, depth_map # Return final pixel colors and depth values
+    
+    def forward_distill_color(self, triplanes, N_S, n_c, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
+        # import ipdb; ipdb.set_trace()
+        # sample points
+        viewdirs = rays_chunk[:, 3:6]
+        if ndc_ray:
+            xyz_sampled, z_vals, ray_valid = self.sample_ray_ndc(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+            
+            # Calculate distances between adjacent samples along the ray
+            # z_vals contains the distance of each sample point from ray origin
+            # We compute differences between consecutive z values to get segment lengths
+            # For the last sample, we append a zero distance
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+            
+            # In NDC space, we need to account for ray direction normalization
+            rays_norm = torch.norm(viewdirs, dim=-1, keepdim=True)  # Length of direction vectors
+            dists = dists * rays_norm  # Scale distances by ray length
+            viewdirs = viewdirs / rays_norm  # Normalize directions to unit vectors
+            
+        else:
+            # For regular world space coordinates
+            # Sample points along each ray using regular sampling strategy
+            xyz_sampled, z_vals, ray_valid = self.sample_ray(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+            
+            # Calculate distances between samples, same as in NDC case
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+            
+        # Reshape viewing directions to match sampled points
+        # Each sampled point needs its corresponding viewing direction for rendering
+        # -1 preserves total size, 1 adds a new dimension, 3 is for xyz coordinates
+        # expand replicates the directions for each sample along the ray
+        viewdirs = viewdirs.view(-1, 1, 3).expand(xyz_sampled.shape)
+        if self.alphaMask is not None:
+            # Sample alpha values for valid ray points from the alpha mask volume
+            alphas = self.alphaMask.sample_alpha(xyz_sampled[ray_valid])
+            
+            # Create mask for points with non-zero alpha
+            alpha_mask = alphas > 0
+            
+            # Start with invalid rays
+            ray_invalid = ~ray_valid
+            
+            # For valid rays, mark as invalid if alpha is zero
+            ray_invalid[ray_valid] |= (~alpha_mask)
+            
+            # Update valid ray mask
+            ray_valid = ~ray_invalid
+
+        # Initialize empty tensors for density (sigma) and color (rgb) for all sampled points
+        sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)  # Shape: [N_rays, N_samples]
+        rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)  # Shape: [N_rays, N_samples, 3]
+        # For valid ray points, compute density features and convert to actual density values
+        if ray_valid.any():
+            # Normalize coordinates to [-1,1] range for grid sampling
+            xyz_sampled_norm = self.normalize_coord(xyz_sampled)
+            # import ipdb; ipdb.set_trace()
+            # Get density features for valid points
+            sigma_feature = self.compute_densityfeature(xyz_sampled_norm[ray_valid]) # factorize 3d to plane and line
+            # Convert features to density values 
+            validsigma = self.feature2density(sigma_feature)
+            # Assign computed densities back to valid points
+            sigma[ray_valid] = validsigma
+            
+        # Convert raw density (sigma) to alpha values and compute weights for volume rendering
+        alpha, weight, bg_weight = raw2alpha(sigma, dists * self.distance_scale)
+
+        # Only compute colors for points with significant contribution to final image
+        app_mask = weight > self.rayMarch_weight_thres
+        N = (triplanes[0].shape[1] - N_S) // n_c
+        # For points that contribute significantly, compute RGB colors
+        if app_mask.any():
+            valid_xyz_color = xyz_sampled[app_mask]
+            local_volume_indices_color, x_indices_left_color, y_indices_left_color, z_indices_left_color, x_indices_right_color, y_indices_right_color, z_indices_right_color = self.get_local_volume_indices(valid_xyz_color)
+            x_image, y_image, z_image = triplanes[0][:,N_S:], triplanes[1][:,N_S:], triplanes[2][:,N_S:]
+            color_coef = torch.zeros((8*valid_xyz_color.shape[0], n_c), device=valid_xyz_color.device) # [8*B, 27]
+            local_volume_indices_color = local_volume_indices_color.reshape(-1, 3)
+            # Vectorize the computation using einsum instead of nested loops
+            # Reshape inputs for batch processing
+            x_feats = x_image[local_volume_indices_color[:,0]] # [8*B, N*n_c]
+            y_feats = y_image[local_volume_indices_color[:,1]] # [8*B, N*n_c] 
+            z_feats = z_image[local_volume_indices_color[:,2]] # [8*B, N*n_c]
+            
+            # Reshape to separate N and n_c dimensions
+            x_feats = x_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            y_feats = y_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            z_feats = z_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            
+            # Compute product across N dimension for all components at once
+            color_coef = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [8*B, n_c]
+            # for idx, (i, j, k) in enumerate(local_volume_indices_color):
+            #     for p in range(n_c):
+            #         color_coef[idx, p] = torch.sum(x_image[i,p*N:(p+1)*N]* y_image[j,p*N:(p+1)*N]* z_image[k,p*N:(p+1)*N], dim=-1)
+            coords_expanded = self.coords[local_volume_indices_color[:,0], local_volume_indices_color[:,1], local_volume_indices_color[:,2]] #[8*B, 3]
+            dirs_expanded = (coords_expanded.reshape(8, -1, 3) - rays_chunk[0, :3].reshape(1,-1,3)).reshape(-1,3) # [8xB, 3] # same camera for the batch
+            dirs_expanded = dirs_expanded/torch.norm(dirs_expanded, dim=-1, keepdim=True)
+            base_dir = eval_sh_bases(2, dirs_expanded.reshape(-1, 3)) # [8xB, 9]
+            app_chunk = torch.einsum('bi,bji->bj', base_dir, color_coef.reshape(-1, 3, 9)) # [8xB, 3]
+            app_chunk = torch.sigmoid(app_chunk)
+
+            valid_rgbs = app_chunk[4::8,:]
+            # valid_rgbs = self.trilinear_interp_coords(app_chunk, valid_xyz_color[:, 0], valid_xyz_color[:, 1], valid_xyz_color[:, 2], 
+            #                              self.x_coords[x_indices_left_color], self.y_coords[y_indices_left_color], self.z_coords[z_indices_left_color], 
+            #                              self.x_coords[x_indices_right_color], self.y_coords[y_indices_right_color], self.z_coords[z_indices_right_color])
+            
+            # # Get appearance features
+            # app_features = self.compute_appfeature(xyz_sampled[app_mask])
+            # # Render RGB values using the chosen rendering module
+            # valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
+            
+            # Assign computed colors back to contributing points
+            rgb[app_mask] = valid_rgbs
+        # Compute final pixel colors through volume rendering equation
+        acc_map = torch.sum(weight, -1)  # Accumulated opacity along each ray
+        rgb_map = torch.sum(weight[..., None] * rgb, -2)  # Weighted sum of colors
+
+        # Handle background color - either white or random during training
+        if white_bg or (is_train and torch.rand((1,))<0.5):
+            rgb_map = rgb_map + (1. - acc_map[..., None])  # Add white background weighted by remaining transparency
+
+        # Ensure output colors are in valid range
+        rgb_map = rgb_map.clamp(0,1)
+
+        # Compute depth map without tracking gradients
+        with torch.no_grad():
+            depth_map = torch.sum(weight * z_vals, -1)  # Expected depth
+            depth_map = depth_map + (1. - acc_map) * rays_chunk[..., -1]  # Add background depth
+
+        return rgb_map, depth_map # Return final pixel colors and depth values
+
+    def forward_distill_color_appfeat(self, triplanes, N_S, n_c, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
+        # import ipdb; ipdb.set_trace()
+        # sample points
+        viewdirs = rays_chunk[:, 3:6]
+        if ndc_ray:
+            xyz_sampled, z_vals, ray_valid = self.sample_ray_ndc(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+
+            # Calculate distances between adjacent samples along the ray
+            # z_vals contains the distance of each sample point from ray origin
+            # We compute differences between consecutive z values to get segment lengths
+            # For the last sample, we append a zero distance
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+            
+            # In NDC space, we need to account for ray direction normalization
+            rays_norm = torch.norm(viewdirs, dim=-1, keepdim=True)  # Length of direction vectors
+            dists = dists * rays_norm  # Scale distances by ray length
+            viewdirs = viewdirs / rays_norm  # Normalize directions to unit vectors
+            
+        else:
+            # For regular world space coordinates
+            # Sample points along each ray using regular sampling strategy
+            xyz_sampled, z_vals, ray_valid = self.sample_ray(rays_chunk[:, :3], viewdirs, is_train=is_train,N_samples=N_samples)
+            
+            # Calculate distances between samples, same as in NDC case
+            dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+
+        # Reshape viewing directions to match sampled points
+        # Each sampled point needs its corresponding viewing direction for rendering
+        # -1 preserves total size, 1 adds a new dimension, 3 is for xyz coordinates
+        # expand replicates the directions for each sample along the ray
+        viewdirs = viewdirs.view(-1, 1, 3).expand(xyz_sampled.shape)
+        if self.alphaMask is not None:
+            # Sample alpha values for valid ray points from the alpha mask volume
+            alphas = self.alphaMask.sample_alpha(xyz_sampled[ray_valid])
+            
+            # Create mask for points with non-zero alpha
+            alpha_mask = alphas > 0
+            
+            # Start with invalid rays
+            ray_invalid = ~ray_valid
+            
+            # For valid rays, mark as invalid if alpha is zero
+            ray_invalid[ray_valid] |= (~alpha_mask)
+            
+            # Update valid ray mask
+            ray_valid = ~ray_invalid
+
+        # Initialize empty tensors for density (sigma) and color (rgb) for all sampled points
+        sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)  # Shape: [N_rays, N_samples]
+        rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)  # Shape: [N_rays, N_samples, 3]
+        # For valid ray points, compute density features and convert to actual density values
+        if ray_valid.any():
+            # Normalize coordinates to [-1,1] range for grid sampling
+            xyz_sampled_norm = self.normalize_coord(xyz_sampled)
+            # import ipdb; ipdb.set_trace()
+            # Get density features for valid points
+            sigma_feature = self.compute_densityfeature(xyz_sampled_norm[ray_valid]) # factorize 3d to plane and line
+            # Convert features to density values 
+            validsigma = self.feature2density(sigma_feature)
+            # Assign computed densities back to valid points
+            sigma[ray_valid] = validsigma
+            
+        # Convert raw density (sigma) to alpha values and compute weights for volume rendering
+        alpha, weight, bg_weight = raw2alpha(sigma, dists * self.distance_scale)
+
+        # Only compute colors for points with significant contribution to final image
+        app_mask = weight > self.rayMarch_weight_thres
+        N = (triplanes[0].shape[1] - N_S) // n_c
+        # For points that contribute significantly, compute RGB colors
+        if app_mask.any():
+            valid_xyz_color = xyz_sampled[app_mask]
+            local_volume_indices_color, x_indices_left_color, y_indices_left_color, z_indices_left_color, x_indices_right_color, y_indices_right_color, z_indices_right_color = self.get_local_volume_indices_nearest(valid_xyz_color)
+            x_image, y_image, z_image = triplanes[0][:,N_S:], triplanes[1][:,N_S:], triplanes[2][:,N_S:]
+            color_coef = torch.zeros((8*valid_xyz_color.shape[0], n_c), device=valid_xyz_color.device) # [8*B, 27]
+            local_volume_indices_color = local_volume_indices_color.reshape(-1, 3)
+            # Vectorize the computation using einsum instead of nested loops
+            # Reshape inputs for batch processing
+            x_feats = x_image[local_volume_indices_color[:,0]] # [8*B, N*n_c]
+            y_feats = y_image[local_volume_indices_color[:,1]] # [8*B, N*n_c] 
+            z_feats = z_image[local_volume_indices_color[:,2]] # [8*B, N*n_c]
+            
+            # Reshape to separate N and n_c dimensions
+            x_feats = x_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            y_feats = y_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            z_feats = z_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            
+            # Compute product across N dimension for all components at once
+            app_features = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [8*B, n_c]
+            app_features = app_features[4::8,:]
+
+            valid_rgbs = self.renderModule(xyz_sampled_norm[app_mask], viewdirs[app_mask], app_features) #[N,3]
+            # Assign computed colors back to contributing points
+            rgb[app_mask] = valid_rgbs #[B,R,3]
+
+        # Compute final pixel colors through volume rendering equation
+        acc_map = torch.sum(weight, -1)  # Accumulated opacity along each ray
+        rgb_map = torch.sum(weight[..., None] * rgb, -2)  # Weighted sum of colors
+
+        # Handle background color - either white or random during training
+        if white_bg or (is_train and torch.rand((1,))<0.5):
+            rgb_map = rgb_map + (1. - acc_map[..., None])  # Add white background weighted by remaining transparency
+
+        # Ensure output colors are in valid range
+        rgb_map = rgb_map.clamp(0,1)
+
+        # Compute depth map without tracking gradients
+        with torch.no_grad():
+            depth_map = torch.sum(weight * z_vals, -1)  # Expected depth
+            depth_map = depth_map + (1. - acc_map) * rays_chunk[..., -1]  # Add background depth
+
+        return rgb_map, depth_map # Return final pixel colors and depth values
     
     def forward_distill(self, triplanes, N_S, n_c, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
         # import ipdb; ipdb.set_trace()

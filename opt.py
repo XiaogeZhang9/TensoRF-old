@@ -88,6 +88,10 @@ def config_parser(cmd=None):
                         help='specific weights npy file to reload for coarse network')
     parser.add_argument("--ckpt_tri", type=str, default=None,
                         help='specific weights npy file to reload for triplanes')
+    parser.add_argument("--ckpt_tri_density", type=str, default=None,
+                        help='specific weights npy file to reload for triplanes density')
+    parser.add_argument("--ckpt_tri_color", type=str, default=None,
+                        help='specific weights npy file to reload for triplanes color')
     parser.add_argument("--render_only", type=int, default=0)
     parser.add_argument("--render_test", type=int, default=0)
     parser.add_argument("--render_train", type=int, default=0)

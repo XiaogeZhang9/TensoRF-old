@@ -25,7 +25,7 @@ def OctreeRender_trilinear_fast_distill(rays, tensorf, triplanes, N_S, n_c, chun
     for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
         rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
         with torch.no_grad():
-            rgb_map, depth_map = tensorf.forward_distill(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+            rgb_map, depth_map = tensorf.forward_distill_color(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
       
         rgbs.append(rgb_map)
         depth_maps.append(depth_map)
