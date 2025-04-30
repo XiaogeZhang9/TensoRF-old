@@ -68,18 +68,24 @@ def render_test(args):
     tensorf = eval(args.model_name)(**kwargs)
     tensorf.load(ckpt)
     
+    triplanes = torch.nn.ParameterList([
+        torch.nn.Parameter(torch.randn((args.H, args.W), device=device, requires_grad=True)) for _ in range(3)
+    ])
     if args.ckpt_tri_density is not None:
         triplanes_density = torch.load(args.ckpt_tri_density, map_location=device)
-        for i in range(len(triplanes)):
-            triplanes[i][:,:args.N_S] = triplanes_density[i]
-            
+        triplanes = torch.nn.ParameterList([
+            torch.nn.Parameter(torch.cat([triplanes_density[i][:,:args.N_S].clone(), triplanes[i][:,args.N_S:].clone()], dim=1))
+            for i in range(len(triplanes))
+        ])
     if args.ckpt_tri_color is not None:
         triplanes_color = torch.load(args.ckpt_tri_color, map_location=device)
-        for i in range(len(triplanes)):
-            triplanes[i][:,args.N_S:] = triplanes_color[i]
-
+        triplanes = torch.nn.ParameterList([
+            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:]].clone(), dim=1))
+            for i in range(len(triplanes))
+        ])
     if args.ckpt_tri is not None:
-        triplanes = torch.load(args.ckpt_tri, map_location=device)
+        triplanes_loaded = torch.load(args.ckpt_tri, map_location=device)
+        triplanes = torch.nn.ParameterList([torch.nn.Parameter(triplanes_loaded[i]) for i in range(len(triplanes_loaded))])
         
     logfolder = os.path.dirname(args.ckpt_tri)
     if args.render_train:
@@ -161,7 +167,7 @@ def reconstruction(args):
 
     print("lr decay", args.lr_decay_target_ratio, args.lr_decay_iters)
     triplanes = torch.nn.ParameterList([
-        torch.nn.Parameter(torch.randn((800, 800), device=device, requires_grad=True)) for _ in range(3)
+        torch.nn.Parameter(torch.randn((args.H, args.W), device=device, requires_grad=True)) for _ in range(3)
     ])
     # optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99))
         # Log initial values for debugging
@@ -192,17 +198,19 @@ def reconstruction(args):
     print(f"initial TV_weight density: {TV_weight_density} appearance: {TV_weight_app}")
     if args.ckpt_tri_density is not None:
         triplanes_density = torch.load(args.ckpt_tri_density, map_location=device)
-        for i in range(len(triplanes)):
-            triplanes[i][:,:args.N_S] = triplanes_density[i]
-            
+        triplanes = torch.nn.ParameterList([
+            torch.nn.Parameter(torch.cat([triplanes_density[i][:,:args.N_S].clone(), triplanes[i][:,args.N_S:].clone()], dim=1))
+            for i in range(len(triplanes))
+        ])
     if args.ckpt_tri_color is not None:
         triplanes_color = torch.load(args.ckpt_tri_color, map_location=device)
-        for i in range(len(triplanes)):
-            triplanes[i][:,args.N_S:] = triplanes_color[i]
-
+        triplanes = torch.nn.ParameterList([
+            torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:]].clone(), dim=1))
+            for i in range(len(triplanes))
+        ])
     if args.ckpt_tri is not None:
-        triplanes = torch.load(args.ckpt_tri, map_location=device)
-        
+        triplanes_loaded = torch.load(args.ckpt_tri, map_location=device)
+        triplanes = torch.nn.ParameterList([torch.nn.Parameter(triplanes_loaded[i]) for i in range(len(triplanes_loaded))])
     # os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
     # PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=206, n_c=27, 
     #                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=args.N_vis, N_samples=nSamples, 
