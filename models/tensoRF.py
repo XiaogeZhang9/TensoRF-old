@@ -144,7 +144,6 @@ class TensorVMSplit(TensorBase):
         H = kargs['H']
         W = kargs['W']
         print(H, W)
-        import ipdb; ipdb.set_trace()
         self.max_coords = torch.max(self.aabb[0], self.aabb[1])
         self.min_coords = torch.min(self.aabb[0], self.aabb[1])
         self.x_coords = torch.linspace(self.min_coords[0], self.max_coords[0], H, device=device)

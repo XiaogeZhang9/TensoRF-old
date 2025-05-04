@@ -298,9 +298,14 @@ def reconstruction(args):
         #         plt.hist(gt[:,2], bins=100)
         #         plt.savefig(f'/media/UNIWA\23903981/Data/onedrive/a-paper3/dist_color.png')
             torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
-            PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
+            PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
                                         savePath=f'{logfolder}/imgs_train_all/', N_vis=args.N_vis, N_samples=nSamples, 
-                                        white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_')
+                                        white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
+            summary_writer.add_scalar('eval/psnr', np.mean(PSNRs), global_step=iteration)
+            summary_writer.add_scalar('eval/ssim', np.mean(ssim), global_step=iteration)
+            summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
+            summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
+
     #     ray_idx = trainingSampler.nextids()
     #     rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
 

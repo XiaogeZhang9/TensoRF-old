@@ -100,7 +100,7 @@ def evaluation(test_dataset,tensorf, args, renderer, savePath=None, N_vis=5, prt
 
 @torch.no_grad()
 def evaluation_distill(test_dataset,tensorf, args, renderer, triplanes, N_S, n_c, savePath=None, N_vis=5, prtx='', N_samples=-1,
-               white_bg=False, ndc_ray=False, compute_extra_metrics=True, device='cuda'):
+               white_bg=False, ndc_ray=False, compute_extra_metrics=True, device='cuda', is_train=False):
     PSNRs, rgb_maps, depth_maps = [], [], []
     ssims,l_alex,l_vgg=[],[],[]
     os.makedirs(savePath, exist_ok=True)
@@ -159,9 +159,10 @@ def evaluation_distill(test_dataset,tensorf, args, renderer, triplanes, N_S, n_c
             np.savetxt(f'{savePath}/{prtx}mean.txt', np.asarray([psnr, ssim, l_a, l_v]))
         else:
             np.savetxt(f'{savePath}/{prtx}mean.txt', np.asarray([psnr]))
-
-
-    return PSNRs
+    if is_train:
+        return PSNRs, ssim, l_a, l_v
+    else:
+        return PSNRs
 
 @torch.no_grad()
 def evaluation_path(test_dataset,tensorf, c2ws, renderer, savePath=None, N_vis=5, prtx='', N_samples=-1,
