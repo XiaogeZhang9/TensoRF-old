@@ -1,11 +1,11 @@
 
 dataset_name = tankstemple
-datadir = ./synthetic_wpc_1024/house
-expname =  tensorf_VM_wpc_1024_view100_house
+datadir = ./synthetic_wpc_1024_view100/ship
+expname =  tensorf_VM_wpc_1024_view100_ship_sh
 basedir = ./log
 
 n_iters = 300000
-batch_size = 4096
+batch_size = 40960
 
 N_voxel_init = 2097152 # 128**3
 N_voxel_final = 27000000 # 300**3
@@ -13,7 +13,7 @@ upsamp_list = [2000,3000,4000,5500,7000]
 update_AlphaMask_list = [2000,4000]
 
 N_vis = 5
-vis_every = 10000
+vis_every = 5120
 
 render_test = 1
 
@@ -22,7 +22,7 @@ n_lamb_sh = [48,48,48]
 model_name = TensorVMSplit
 
 
-shadingMode = MLP_Fea
+shadingMode = SH
 fea2denseAct = softplus
 
 view_pe = 2

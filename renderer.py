@@ -25,7 +25,7 @@ def OctreeRender_trilinear_fast_distill(rays, tensorf, triplanes, N_S, n_c, chun
     for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
         rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
         with torch.no_grad():
-            rgb_map, depth_map = tensorf.forward_distill_color(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+            rgb_map, depth_map = tensorf.forward_distill_color_sh(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
       
         rgbs.append(rgb_map)
         depth_maps.append(depth_map)
@@ -144,9 +144,9 @@ def evaluation_distill(test_dataset,tensorf, args, renderer, triplanes, N_S, n_c
         # rgb_maps.append(rgb_map)
         # depth_maps.append(depth_map)
         if savePath is not None:
-            imageio.imwrite(f'{savePath}/{prtx}{idx:03d}.png', rgb_map)
+            imageio.imwrite(f'{savePath}/{prtx}{idx:04d}.png', rgb_map)
             rgb_map = np.concatenate((rgb_map, depth_map), axis=1)
-            imageio.imwrite(f'{savePath}/rgbd/{prtx}{idx:03d}.png', rgb_map)
+            imageio.imwrite(f'{savePath}/rgbd/{prtx}{idx:04d}.png', rgb_map)
     # imageio.mimwrite(f'{savePath}/{prtx}video.mp4', np.stack(rgb_maps), fps=30, quality=10)
     # imageio.mimwrite(f'{savePath}/{prtx}depthvideo.mp4', np.stack(depth_maps), fps=30, quality=10)
 

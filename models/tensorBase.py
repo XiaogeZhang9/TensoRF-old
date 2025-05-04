@@ -173,7 +173,7 @@ class TensorBase(torch.nn.Module):
                     shadingMode = 'MLP_PE', alphaMask = None, near_far=[2.0,6.0],
                     density_shift = -10, alphaMask_thres=0.001, distance_scale=25, rayMarch_weight_thres=0.0001,
                     pos_pe = 6, view_pe = 6, fea_pe = 6, featureC=128, step_ratio=2.0,
-                    fea2denseAct = 'softplus'):
+                    fea2denseAct = 'softplus', H=1024, W=1024):
         super(TensorBase, self).__init__()
 
         self.density_n_comp = density_n_comp
@@ -533,7 +533,43 @@ class TensorBase(torch.nn.Module):
 
         return alpha
 
-
+    # def forward(self, dirs):
+    #     dirs = dirs/torch.norm(dirs.unsqueeze(0), dim=-1, keepdim=True)
+    #     from tqdm import tqdm
+    #     x_idx = torch.linspace(-1, 1, 800).to(dirs.device)
+    #     y_idx = torch.linspace(-1, 1, 800).to(dirs.device)
+    #     z_idx = torch.linspace(-1, 1, 800).to(dirs.device)
+    #     y_grid, z_grid = torch.meshgrid(y_idx, z_idx)
+    #     coords = torch.stack([y_grid, z_grid], dim=-1).reshape(-1,2)
+        
+    #     x_idx_cpu = x_idx.cpu()
+    #     y_idx_cpu = y_idx.cpu()
+    #     z_idx_cpu = z_idx.cpu()
+    #     x_grid_cpu, y_grid_cpu, z_grid_cpu = torch.meshgrid(x_idx_cpu, y_idx_cpu, z_idx_cpu)
+    #     coords_cpu = torch.stack([x_grid_cpu, y_grid_cpu, z_grid_cpu], dim=-1).reshape(-1,3)
+    #     valid_rgbs = []
+    #     with torch.no_grad():
+    #         for x in tqdm(x_idx):
+    #             for idx in tqdm(range(0, len(coords), 2560)):
+    #                 coords_chunk = coords[idx:idx+2560]        
+    #                 idx = torch.cat([torch.tensor([x], device=coords_chunk.device).unsqueeze(0).repeat(coords_chunk.shape[0],1),coords_chunk], dim=-1).to(dirs.device)
+    #                 dirs_chunk = dirs.repeat(coords_chunk.shape[0],1)
+    #                 app_features = self.compute_appfeature(idx) #[N,3]
+    #                 # Render RGB values using the chosen rendering module
+    #                 valid_rgb = self.renderModule(idx, dirs_chunk, app_features) #[N,3]self.compute_density(idx)
+    #                 valid_rgbs.append(valid_rgb.detach().cpu())
+    #         valid_rgbs = torch.cat(valid_rgbs, dim=0)
+    #         import open3d as o3d
+    #         pcd = o3d.geometry.PointCloud()
+    #         pcd.points = o3d.utility.Vector3dVector(coords_cpu[::256].numpy())
+    #         print('points done')
+    #         pcd.colors = o3d.utility.Vector3dVector(valid_rgbs[::256].numpy())
+    #         print('colors done')
+    #         o3d.io.write_point_cloud("log_triplane/tensorf_VM_wpc_1024_view100_house_lr0.001_sqrtlinear/gt256.ply", pcd)
+    #         print('write done')
+    #         import ipdb; ipdb.set_trace()
+    #     return valid_rgbs
+    
     def forward(self, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
         # sample points
         viewdirs = rays_chunk[:, 3:6]
@@ -606,7 +642,6 @@ class TensorBase(torch.nn.Module):
         # For points that contribute significantly, compute RGB colors
         if app_mask.any():
             # Get appearance features
-            import ipdb; ipdb.set_trace()
             app_features = self.compute_appfeature(xyz_sampled[app_mask]) #[N,3]
             # Render RGB values using the chosen rendering module
             valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features) #[N,3]

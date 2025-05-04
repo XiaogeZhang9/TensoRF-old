@@ -7,7 +7,7 @@ import cv2
 
 def define_camera_intrinsics():
     # Define camera intrinsics (example values)
-    image_width, image_height = 1024, 1024
+    image_width, image_height = 1024, 1024 
     fx, fy = 1024, 1024  # Focal length
     cx, cy = image_width/2, image_height/2  # Principal point
 
@@ -121,7 +121,7 @@ def render_depth_image(point_cloud, camera_pose, K, width, height):
     vis.destroy_window()
     return depth, rgb_bgr
 
-def generate_and_save_views(point_file, n_views=100, output_dir="./synthetic_views"):
+def generate_and_save_views(point_file, n_views=100, output_dir="./synthetic_views", prefix="1"):
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -162,11 +162,11 @@ def generate_and_save_views(point_file, n_views=100, output_dir="./synthetic_vie
         rgb_vis = (rgb / np.max(rgb) * 255).astype(np.uint8)
         
         # Save images and poses
-        cv2.imwrite(f"{output_dir}/depth/0_{i:04d}.png", depth_vis)
-        cv2.imwrite(f"{output_dir}/rgb/0_{i:04d}.png", rgb_vis)
+        cv2.imwrite(f"{output_dir}/depth/{prefix}_{i:04d}.png", depth_vis)
+        cv2.imwrite(f"{output_dir}/rgb/{prefix}_{i:04d}.png", rgb_vis)
         
         # Save camera pose
-        np.savetxt(f"{output_dir}/pose/0_{i:04d}.txt", pose, fmt='%.6f')
+        np.savetxt(f"{output_dir}/pose/{prefix}_{i:04d}.txt", pose, fmt='%.6f')
     
     # Save camera intrinsics (padded to 4x4)
     K_padded = np.pad(K, ((0,1), (0,1)), mode='constant')
@@ -228,13 +228,16 @@ def make_dirs(output_dir):
 
 if __name__ == "__main__":
     # Generate synthetic views
-    point_folders = glob.glob('/media/UNIWA\\23903981/Data2/data/WPC_database/original_PCs/*.ply')[:4]
-    for point_file in point_folders:
+    datasets = ["pencontainer", "pineapple", "mushroom", "litchi", "house"]
+    point_folder = '/media/UNIWA\\23903981/Data2/data/WPC_database/original_PCs'
+    for dataset in datasets:
         # import ipdb; ipdb.set_trace()
-        base_name = f'./synthetic_wpc_1024_view200/{point_file.split("/")[-1].split(".")[0]}'
+        point_file = f'{point_folder}/{dataset}.ply'
+        base_name = f'./synthetic_wpc_1024_view100/{point_file.split("/")[-1].split(".")[0]}'
         make_dirs(base_name)
         generate_bouding_box(point_file, base_name)
-        generate_and_save_views(point_file, n_views=200, output_dir=base_name)
-    
+        generate_and_save_views(point_file, n_views=100, output_dir=base_name, prefix="1")
+        generate_and_save_views(point_file, n_views=100, output_dir=base_name, prefix="0")
+
     # Prepare NeRF dataset
     # prepare_nerf_dataset(data_dir="./synthetic_wpc", output_dir="./nerf_wpc")

@@ -113,8 +113,8 @@ def reconstruction(args):
     # init log file
     os.makedirs(logfolder, exist_ok=True)
     os.makedirs(f'{logfolder}/imgs_vis', exist_ok=True)
-    os.makedirs(f'{logfolder}/imgs_rgba', exist_ok=True)
-    os.makedirs(f'{logfolder}/rgba', exist_ok=True)
+    # os.makedirs(f'{logfolder}/imgs_rgba', exist_ok=True)
+    # os.makedirs(f'{logfolder}/rgba', exist_ok=True)
     summary_writer = SummaryWriter(logfolder)
 
 
@@ -123,7 +123,6 @@ def reconstruction(args):
     # tensorVM, renderer = init_parameters(args, train_dataset.scene_bbox.to(device), reso_list[0])
     aabb = train_dataset.scene_bbox.to(device)
     reso_cur = N_to_reso(args.N_voxel_init, aabb)
-    import ipdb; ipdb.set_trace()
     nSamples = min(args.nSamples, cal_n_samples(reso_cur,args.step_ratio))
 
     if args.ckpt is not None:
@@ -236,6 +235,7 @@ def reconstruction(args):
             PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=args.N_vis,
                                     prtx=f'{iteration:06d}_', N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False)
             summary_writer.add_scalar('test/psnr', np.mean(PSNRs_test), global_step=iteration)
+            tensorf.save(f'{logfolder}/{iteration//args.vis_every*2:03d}.pt')
 
 
 
@@ -271,7 +271,6 @@ def reconstruction(args):
             grad_vars = tensorf.get_optparam_groups(args.lr_init*lr_scale, args.lr_basis*lr_scale)
             optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))
         
-
     tensorf.save(f'{logfolder}/{args.expname}.th')
 
 

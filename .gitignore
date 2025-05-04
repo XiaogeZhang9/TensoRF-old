@@ -1,3 +1,8 @@
 __pycache__
 synthetic*
 log
+*.zip
+scripts_csiro
+scripts_sbatch
+temp
+log_triplane
