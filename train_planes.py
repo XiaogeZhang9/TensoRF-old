@@ -13,7 +13,7 @@ import datetime
 from dataLoader.tankstemple import DistillPlane
 from dataLoader import dataset_dict
 import sys
-
+import shutil
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,7 +48,15 @@ def export_mesh(args):
     alpha,_ = tensorf.getDenseAlpha()
     convert_sdf_samples_to_ply(alpha.cpu(), f'{args.ckpt[:-3]}.ply',bbox=tensorf.aabb.cpu(), level=0.005)
 
-
+@torch.no_grad()
+def copy_code(out_path, config_path):
+    os.makedirs(out_path, exist_ok=True)
+    os.makedirs(os.path.join(out_path, 'code'), exist_ok=True)
+    shutil.copyfile(__file__, os.path.join(out_path, 'code', os.path.basename(__file__)))
+    shutil.copyfile(config_path, os.path.join(out_path, 'code', os.path.basename(config_path)))
+    shutil.copyfile('renderer.py', os.path.join(out_path, 'code', 'renderer.py'))
+    shutil.copyfile('models/tensoRF.py', os.path.join(out_path, 'code', 'tensoRF.py'))
+    
 @torch.no_grad()
 def render_test(args):
     # init dataset
@@ -63,11 +71,12 @@ def render_test(args):
 
     ckpt = torch.load(args.ckpt, map_location=device)
     kwargs = ckpt['kwargs']
-
     kwargs.update({'device': device})
+    kwargs.update({'H':args.H})
+    kwargs.update({'W':args.W})
     tensorf = eval(args.model_name)(**kwargs)
     tensorf.load(ckpt)
-    
+        
     triplanes = torch.nn.ParameterList([
         torch.nn.Parameter(torch.randn((args.H, args.W), device=device, requires_grad=True)) for _ in range(3)
     ])
@@ -77,17 +86,18 @@ def render_test(args):
             torch.nn.Parameter(torch.cat([triplanes_density[i][:,:args.N_S].clone(), triplanes[i][:,args.N_S:].clone()], dim=1))
             for i in range(len(triplanes))
         ])
+        logfolder = os.path.dirname(args.ckpt_tri_density)
     if args.ckpt_tri_color is not None:
         triplanes_color = torch.load(args.ckpt_tri_color, map_location=device)
         triplanes = torch.nn.ParameterList([
             torch.nn.Parameter(torch.cat([triplanes[i][:,:args.N_S].clone(), triplanes_color[i][:,args.N_S:].clone()], dim=1))
             for i in range(len(triplanes))
         ])
+        logfolder = os.path.dirname(args.ckpt_tri_color)
     if args.ckpt_tri is not None:
         triplanes_loaded = torch.load(args.ckpt_tri, map_location=device)
         triplanes = torch.nn.ParameterList([torch.nn.Parameter(triplanes_loaded[i]) for i in range(len(triplanes_loaded))])
         
-    logfolder = os.path.dirname(args.ckpt_tri_color)
     if args.render_train:
         os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
         train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=True)
@@ -139,8 +149,7 @@ def reconstruction(args):
     os.makedirs(f'{logfolder}/rgba', exist_ok=True)
     summary_writer = SummaryWriter(logfolder)
 
-
-
+    copy_code(logfolder, args.config)
     # init parameters
     # tensorVM, renderer = init_parameters(args, train_dataset.scene_bbox.to(device), reso_list[0])
     aabb = train_dataset.scene_bbox.to(device)
@@ -218,6 +227,7 @@ def reconstruction(args):
     # os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
     # PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=206, n_c=27, 
     #                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=args.N_vis, N_samples=nSamples, 
+    #                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=args.N_vis, N_samples=nSamples, 
     #                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{args.ckpt_tri.split(".")[0].split("_")[-1]}_')
     # print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
     optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99), lr=args.lr_init)
@@ -227,17 +237,26 @@ def reconstruction(args):
     dataloader = torch.utils.data.DataLoader(planedataset, batch_size=args.batch_size, shuffle=True)
     dataloader_ordered = torch.utils.data.DataLoader(planedataset, batch_size=args.batch_size, shuffle=False)
     # for iteration in pbar:
-    #     for batch in tqdm(dataloader, total=len(dataloader), desc="Distilling Planes"):
-    #         loss_sigma = tensorf.distill_density_total(batch, triplanes, H=800, W=800, N_S=206, n_c=27)
+    #     for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Planes"):
+    #         loss_sigma = tensorf.distill_density_total(batch, triplanes, H=args.H, W=args.W, N_S=args.N_S, n_c=27)
     #         optimizer.zero_grad()
     #         loss_sigma.backward()
     #         optimizer.step()
     #         # Save triplanes state
     #         triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
-    #     print(triplanes[0].grad.max())
+    #     summary_writer.add_scalar('train/loss_density', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
+    #     summary_writer.add_scalar('train/grad', triplanes[0].grad.mean().item(), global_step=idx+iteration*len(dataloader))
     #     initial_values = [p.data.max().item() for p in triplanes]
     #     print(f"Initial triplane mean values: {initial_values}")        
+        
     #     torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
+    #     PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
+    #                                 savePath=f'{logfolder}/imgs_train_all/', N_vis=args.N_vis, N_samples=nSamples, 
+    #                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
+    #     summary_writer.add_scalar('eval/psnr', np.mean(PSNRs), global_step=iteration)
+    #     summary_writer.add_scalar('eval/ssim', np.mean(ssim), global_step=iteration)
+    #     summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
+    #     summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
     while True:
         ray_idx = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
@@ -259,6 +278,7 @@ def reconstruction(args):
         summary_writer.add_scalar('train/x', triplanes[0].data.mean().item(), global_step=(iteration+1)*len(dataloader))      
         summary_writer.add_scalar('train/y', triplanes[1].data.mean().item(), global_step=(iteration+1)*len(dataloader))
         summary_writer.add_scalar('train/z', triplanes[2].data.mean().item(), global_step=(iteration+1)*len(dataloader))
+        best_psnr = 0
         if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
         #     color_chunks = []
         #     color_gts = []
@@ -266,8 +286,8 @@ def reconstruction(args):
         #         print(dataloader_ordered)
         #         for idx, batch in tqdm(enumerate(dataloader_ordered), total=len(dataloader_ordered), desc="Distilling Planes"):
         #             loss_sigma, color_chunk, color_gt = tensorf.distill_color_total(batch, triplanes, rays_o_unique, train_dataset,H=args.H, W=args.W, N_S=args.N_S, n_c=27)
-        #             color_chunks.append(color_chunk[::256,0,:].detach().cpu())
-        #             color_gts.append(color_gt[::256,0,:].detach().cpu())
+        #             color_chunks.append(color_chunk[:,19,:].detach().cpu())
+        #             color_gts.append(color_gt[:,19,:].detach().cpu())
         #         import ipdb; ipdb.set_trace()
         #         color_chunks = torch.cat(color_chunks, dim=0).detach().cpu().numpy()
         #         color_gts = torch.cat(color_gts, dim=0).detach().cpu().numpy()
@@ -305,123 +325,9 @@ def reconstruction(args):
             summary_writer.add_scalar('eval/ssim', np.mean(ssim), global_step=iteration)
             summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
             summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
-
-    #     ray_idx = trainingSampler.nextids()
-    #     rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
-
-    #     #rgb_map, alphas_map, depth_map, weights, uncertainty
-    #     rgb_map, alphas_map, depth_map, weights, uncertainty = renderer(rays_train, tensorf, chunk=args.batch_size,
-    #                             N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
-
-    #     loss = torch.mean((rgb_map - rgb_train) ** 2)
-
-
-    #     # loss
-    #     total_loss = loss
-    #     if Ortho_reg_weight > 0:
-    #         loss_reg = tensorf.vector_comp_diffs()
-    #         total_loss += Ortho_reg_weight*loss_reg
-    #         summary_writer.add_scalar('train/reg', loss_reg.detach().item(), global_step=iteration)
-    #     if L1_reg_weight > 0:
-    #         loss_reg_L1 = tensorf.density_L1()
-    #         total_loss += L1_reg_weight*loss_reg_L1
-    #         summary_writer.add_scalar('train/reg_l1', loss_reg_L1.detach().item(), global_step=iteration)
-
-    #     if TV_weight_density>0:
-    #         TV_weight_density *= lr_factor
-    #         loss_tv = tensorf.TV_loss_density(tvreg) * TV_weight_density
-    #         total_loss = total_loss + loss_tv
-    #         summary_writer.add_scalar('train/reg_tv_density', loss_tv.detach().item(), global_step=iteration)
-    #     if TV_weight_app>0:
-    #         TV_weight_app *= lr_factor
-    #         loss_tv = tensorf.TV_loss_app(tvreg)*TV_weight_app
-    #         total_loss = total_loss + loss_tv
-    #         summary_writer.add_scalar('train/reg_tv_app', loss_tv.detach().item(), global_step=iteration)
-
-    #     optimizer.zero_grad()
-    #     total_loss.backward()
-    #     optimizer.step()
-
-    #     loss = loss.detach().item()
-        
-    #     PSNRs.append(-10.0 * np.log(loss) / np.log(10.0))
-    #     summary_writer.add_scalar('train/PSNR', PSNRs[-1], global_step=iteration)
-    #     summary_writer.add_scalar('train/mse', loss, global_step=iteration)
-
-
-    #     for param_group in optimizer.param_groups:
-    #         param_group['lr'] = param_group['lr'] * lr_factor
-
-    #     # Print the current values of the losses.
-    #     if iteration % args.progress_refresh_rate == 0:
-    #         pbar.set_description(
-    #             f'Iteration {iteration:05d}:'
-    #             + f' train_psnr = {float(np.mean(PSNRs)):.2f}'
-    #             + f' test_psnr = {float(np.mean(PSNRs_test)):.2f}'
-    #             + f' mse = {loss:.6f}'
-    #         )
-    #         PSNRs = []
-
-    #     if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
-    #         PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=args.N_vis,
-    #                                 prtx=f'{iteration:06d}_', N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False)
-    #         summary_writer.add_scalar('test/psnr', np.mean(PSNRs_test), global_step=iteration)
-
-
-
-    #     if iteration in update_AlphaMask_list:
-
-    #         if reso_cur[0] * reso_cur[1] * reso_cur[2]<256**3:# update volume resolution
-    #             reso_mask = reso_cur
-    #         new_aabb = tensorf.updateAlphaMask(tuple(reso_mask))
-    #         if iteration == update_AlphaMask_list[0]:
-    #             tensorf.shrink(new_aabb)
-    #             # tensorVM.alphaMask = None
-    #             L1_reg_weight = args.L1_weight_rest
-    #             print("continuing L1_reg_weight", L1_reg_weight)
-
-
-    #         if not args.ndc_ray and iteration == update_AlphaMask_list[1]:
-    #             # filter rays outside the bbox
-    #             allrays,allrgbs = tensorf.filtering_rays(allrays,allrgbs)
-    #             trainingSampler = SimpleSampler(allrgbs.shape[0], args.batch_size)
-
-
-    #     if iteration in upsamp_list:
-    #         n_voxels = N_voxel_list.pop(0)
-    #         reso_cur = N_to_reso(n_voxels, tensorf.aabb)
-    #         nSamples = min(args.nSamples, cal_n_samples(reso_cur,args.step_ratio))
-    #         tensorf.upsample_volume_grid(reso_cur)
-
-    #         if args.lr_upsample_reset:
-    #             print("reset lr to initial")
-    #             lr_scale = 1 #0.1 ** (iteration / args.n_iters)
-    #         else:
-    #             lr_scale = args.lr_decay_target_ratio ** (iteration / args.n_iters)
-    #         grad_vars = tensorf.get_optparam_groups(args.lr_init*lr_scale, args.lr_basis*lr_scale)
-    #         optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))
-        
-
-    # tensorf.save(f'{logfolder}/{args.expname}.th')
-
-    # if args.render_train:
-    #     os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
-    #     train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=True)
-    #     PSNRs_test = evaluation(train_dataset,tensorf, args, renderer, f'{logfolder}/imgs_train_all/',
-    #                             N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
-    #     print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
-
-    # if args.render_test:
-
-
-    # if args.render_path:
-    #     c2ws = test_dataset.render_path
-    #     # c2ws = test_dataset.poses
-    #     print('========>',c2ws.shape)
-    #     os.makedirs(f'{logfolder}/imgs_path_all', exist_ok=True)
-    #     evaluation_path(test_dataset,tensorf, c2ws, renderer, f'{logfolder}/imgs_path_all/',
-    #                             N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
-
+            if np.mean(PSNRs) > best_psnr:
+                best_psnr = np.mean(PSNRs)
+                torch.save(triplanes_state, f'{logfolder}/triplanes_best.pt')
 
 if __name__ == '__main__':
 

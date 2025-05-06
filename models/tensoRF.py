@@ -271,6 +271,7 @@ class TensorVMSplit(TensorBase):
         # sigma_chunk = torch.sum(x_image[i,:N_S]* y_image[j,:N_S]* z_image[k,:N_S], dim=-1)
         with torch.no_grad():
             sigma_gt = self.compute_densityfeature(self.normalized_coors[i,j,k].reshape(-1,3))
+            # sigma_gt = self.feature2density(sigma_gt_feature)
         loss_func = torch.nn.MSELoss()
         # import ipdb; ipdb.set_trace()
         loss_sigma = loss_func(sigma_chunk, sigma_gt)
@@ -772,13 +773,14 @@ class TensorVMSplit(TensorBase):
             local_volume_indices, x_indices_left, y_indices_left, z_indices_left, x_indices_right, y_indices_right, z_indices_right = self.get_local_volume_indices(valid_xyz)
             sigma_chunk = self.compute_densityfeature_distill(triplanes, valid_xyz, local_volume_indices, N_S)
             # sigma_chunk = sigma_chunk.reshape(-1, 1)
-            sigma_pred = self.trilinear_interp_coords(sigma_chunk, valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2], 
-                                         self.x_coords[x_indices_left], self.y_coords[y_indices_left], self.z_coords[z_indices_left], 
-                                         self.x_coords[x_indices_right], self.y_coords[y_indices_right], self.z_coords[z_indices_right])
-            # Get density features for valid points
+
             # sigma_feature = self.compute_densityfeature(xyz_sampled[ray_valid]) # factorize 3d to plane and line
             # Convert features to density values 
-            validsigma = self.feature2density(sigma_pred)
+            sigma_chunk_feature = self.feature2density(sigma_chunk)
+            validsigma = self.trilinear_interp_coords(sigma_chunk_feature, valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2], 
+                                self.x_coords[x_indices_left], self.y_coords[y_indices_left], self.z_coords[z_indices_left], 
+                                self.x_coords[x_indices_right], self.y_coords[y_indices_right], self.z_coords[z_indices_right])
+            # Get density features for valid points
             # Assign computed densities back to valid points
             sigma[ray_valid] = validsigma
         # Convert raw density (sigma) to alpha values and compute weights for volume rendering
@@ -789,51 +791,14 @@ class TensorVMSplit(TensorBase):
         N = (triplanes[0].shape[1] - N_S) // n_c
         # For points that contribute significantly, compute RGB colors
         if app_mask.any():
-            # xyz_sampled = self.normalize_coord(xyz_sampled)
-            # # Get appearance features
-            # app_features = self.compute_appfeature(xyz_sampled[app_mask]) #[N,3]
-            # # Render RGB values using the chosen rendering module
-            # valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features) #[N,3]
-            # # Assign computed colors back to contributing points
-            # rgb[app_mask] = valid_rgbs #[B,R,3]
-            
-            valid_xyz_color = xyz_sampled[app_mask]
-            local_volume_indices_color, x_indices_left_color, y_indices_left_color, z_indices_left_color, x_indices_right_color, y_indices_right_color, z_indices_right_color = self.get_local_volume_indices(valid_xyz_color)
-            x_image, y_image, z_image = triplanes[0][:,N_S:], triplanes[1][:,N_S:], triplanes[2][:,N_S:]
-            color_coef = torch.zeros((8*valid_xyz_color.shape[0], n_c), device=valid_xyz_color.device) # [8*B, 27]
-            local_volume_indices_color = local_volume_indices_color.reshape(-1, 3)
-            # Vectorize the computation using einsum instead of nested loops
-            # Reshape inputs for batch processing
-            x_feats = x_image[local_volume_indices_color[:,0]] # [B, N*n_c]
-            y_feats = y_image[local_volume_indices_color[:,1]] # [B, N*n_c] 
-            z_feats = z_image[local_volume_indices_color[:,2]] # [B, N*n_c]
-            
-            # Reshape to separate N and n_c dimensions
-            x_feats = x_feats.reshape(-1, n_c, N) # [B, n_c, N]
-            y_feats = y_feats.reshape(-1, n_c, N) # [B, n_c, N]
-            z_feats = z_feats.reshape(-1, n_c, N) # [B, n_c, N]
-            
-            # Compute product across N dimension for all components at once
-            color_coef = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [B, n_c]
-            # for idx, (i, j, k) in enumerate(local_volume_indices_color):
-            #     for p in range(n_c):
-            #         color_coef[idx, p] = torch.sum(x_image[i,p*N:(p+1)*N]* y_image[j,p*N:(p+1)*N]* z_image[k,p*N:(p+1)*N], dim=-1)
-            coords_expanded = self.coords[local_volume_indices_color[:,0], local_volume_indices_color[:,1], local_volume_indices_color[:,2]] #[8*B, 3]
-            dirs_expanded = (coords_expanded.reshape(8, -1, 3) - rays_chunk[0, :3].reshape(1,-1,3)).reshape(-1,3) # [8xB, 3] # same camera for the batch
-            base_dir = eval_sh_bases(2, dirs_expanded.reshape(-1, 3)) # [8xB, 9]
-            app_chunk = torch.einsum('bi,bji->bj', base_dir, color_coef.reshape(-1, 3, 9)) # [8xB, 3]
-            app_chunk = torch.sigmoid(app_chunk)
-            valid_rgbs = self.trilinear_interp_coords(app_chunk, valid_xyz_color[:, 0], valid_xyz_color[:, 1], valid_xyz_color[:, 2], 
-                                         self.x_coords[x_indices_left_color], self.y_coords[y_indices_left_color], self.z_coords[z_indices_left_color], 
-                                         self.x_coords[x_indices_right_color], self.y_coords[y_indices_right_color], self.z_coords[z_indices_right_color])
-            
-            # # Get appearance features
-            # app_features = self.compute_appfeature(xyz_sampled[app_mask])
-            # # Render RGB values using the chosen rendering module
-            # valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
-            
+            xyz_sampled = self.normalize_coord(xyz_sampled)
+            # Get appearance features
+            app_features = self.compute_appfeature(xyz_sampled[app_mask]) #[N,3]
+            # Render RGB values using the chosen rendering module
+            valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features) #[N,3]
             # Assign computed colors back to contributing points
-            rgb[app_mask] = valid_rgbs
+            rgb[app_mask] = valid_rgbs #[B,R,3]
+            
         # Compute final pixel colors through volume rendering equation
         acc_map = torch.sum(weight, -1)  # Accumulated opacity along each ray
         rgb_map = torch.sum(weight[..., None] * rgb, -2)  # Weighted sum of colors
@@ -1168,14 +1133,14 @@ class TensorVMSplit(TensorBase):
 
             local_volume_indices, x_indices_left, y_indices_left, z_indices_left, x_indices_right, y_indices_right, z_indices_right = self.get_local_volume_indices(valid_xyz)
             sigma_chunk = self.compute_densityfeature_distill(triplanes, valid_xyz, local_volume_indices, N_S)
+            sigma_chunk_feature = self.feature2density(sigma_chunk)
             # sigma_chunk = sigma_chunk.reshape(-1, 1)
-            sigma_pred = self.trilinear_interp_coords(sigma_chunk, valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2], 
+            validsigma = self.trilinear_interp_coords(sigma_chunk_feature, valid_xyz[:, 0], valid_xyz[:, 1], valid_xyz[:, 2], 
                                          self.x_coords[x_indices_left], self.y_coords[y_indices_left], self.z_coords[z_indices_left], 
                                          self.x_coords[x_indices_right], self.y_coords[y_indices_right], self.z_coords[z_indices_right])
             # Get density features for valid points
             # sigma_feature = self.compute_densityfeature(xyz_sampled[ray_valid]) # factorize 3d to plane and line
             # Convert features to density values 
-            validsigma = self.feature2density(sigma_pred)
             # Assign computed densities back to valid points
             sigma[ray_valid] = validsigma
         # Convert raw density (sigma) to alpha values and compute weights for volume rendering
@@ -1193,35 +1158,30 @@ class TensorVMSplit(TensorBase):
             local_volume_indices_color = local_volume_indices_color.reshape(-1, 3)
             # Vectorize the computation using einsum instead of nested loops
             # Reshape inputs for batch processing
-            x_feats = x_image[local_volume_indices_color[:,0]] # [B, N*n_c]
-            y_feats = y_image[local_volume_indices_color[:,1]] # [B, N*n_c] 
-            z_feats = z_image[local_volume_indices_color[:,2]] # [B, N*n_c]
+            x_feats = x_image[local_volume_indices_color[:,0]] # [8*B, N*n_c]
+            y_feats = y_image[local_volume_indices_color[:,1]] # [8*B, N*n_c] 
+            z_feats = z_image[local_volume_indices_color[:,2]] # [8*B, N*n_c]
             
             # Reshape to separate N and n_c dimensions
-            x_feats = x_feats.reshape(-1, n_c, N) # [B, n_c, N]
-            y_feats = y_feats.reshape(-1, n_c, N) # [B, n_c, N]
-            z_feats = z_feats.reshape(-1, n_c, N) # [B, n_c, N]
+            x_feats = x_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            y_feats = y_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
+            z_feats = z_feats.reshape(-1, n_c, N) # [8*B, n_c, N]
             
             # Compute product across N dimension for all components at once
-            color_coef = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [B, n_c]
-            # for idx, (i, j, k) in enumerate(local_volume_indices_color):
-            #     for p in range(n_c):
-            #         color_coef[idx, p] = torch.sum(x_image[i,p*N:(p+1)*N]* y_image[j,p*N:(p+1)*N]* z_image[k,p*N:(p+1)*N], dim=-1)
+            app_features = torch.einsum('bcn,bcn,bcn->bc', x_feats, y_feats, z_feats) # [8*B, n_c]
+
             coords_expanded = self.coords[local_volume_indices_color[:,0], local_volume_indices_color[:,1], local_volume_indices_color[:,2]] #[8*B, 3]
             dirs_expanded = (coords_expanded.reshape(8, -1, 3) - rays_chunk[0, :3].reshape(1,-1,3)).reshape(-1,3) # [8xB, 3] # same camera for the batch
-            base_dir = eval_sh_bases(2, dirs_expanded.reshape(-1, 3)) # [8xB, 9]
-            app_chunk = torch.einsum('bi,bji->bj', base_dir, color_coef.reshape(-1, 3, 9)) # [8xB, 3]
-            valid_rgbs = self.trilinear_interp_coords(app_chunk, valid_xyz_color[:, 0], valid_xyz_color[:, 1], valid_xyz_color[:, 2], 
+            dirs_expanded = dirs_expanded/torch.norm(dirs_expanded, dim=-1, keepdim=True)
+            coords_norm_expanded = self.normalized_coors[local_volume_indices_color[:,0], local_volume_indices_color[:,1], local_volume_indices_color[:,2]]
+            valid_rgbs = self.renderModule(coords_norm_expanded, dirs_expanded, app_features)
+            # valid_rgbs = valid_rgbs[4::8,:]
+            valid_rgbs = self.trilinear_interp_coords(valid_rgbs, valid_xyz_color[:, 0], valid_xyz_color[:, 1], valid_xyz_color[:, 2], 
                                          self.x_coords[x_indices_left_color], self.y_coords[y_indices_left_color], self.z_coords[z_indices_left_color], 
                                          self.x_coords[x_indices_right_color], self.y_coords[y_indices_right_color], self.z_coords[z_indices_right_color])
-            
-            # # Get appearance features
-            # app_features = self.compute_appfeature(xyz_sampled[app_mask])
-            # # Render RGB values using the chosen rendering module
-            # valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
-            
+            # valid_rgbs = self.renderModule(xyz_sampled_norm[app_mask], viewdirs[app_mask], app_features) #[N,3]
             # Assign computed colors back to contributing points
-            rgb[app_mask] = valid_rgbs
+            rgb[app_mask] = valid_rgbs #[B,R,3]
         # Compute final pixel colors through volume rendering equation
         acc_map = torch.sum(weight, -1)  # Accumulated opacity along each ray
         rgb_map = torch.sum(weight[..., None] * rgb, -2)  # Weighted sum of colors
