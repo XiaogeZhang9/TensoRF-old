@@ -6,10 +6,10 @@ basedir = ./log_triplane
 
 n_iters = 600
 batch_size = 204800
-H = 1024
-W = 1024
-N_S = 214
-lr_init = 0.001
+H = 800
+W = 800
+N_S = 206
+lr_init = 0.005
 
 N_voxel_init = 2097152 # 128**3
 N_voxel_final = 27000000 # 300**3

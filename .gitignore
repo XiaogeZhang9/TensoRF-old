@@ -1,6 +1,6 @@
 __pycache__
 synthetic*
-log
+log*
 *.zip
 scripts_csiro
 scripts_sbatch
