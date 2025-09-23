@@ -313,7 +313,7 @@ class TensorVMSplit(TensorBase):
         loss_color = loss_func(color_coef, app_features)
         return loss_color
     
-    def distill_color_total(self, idx, triplanes, rays_o_unique, dataset,H, W, N_S, n_c):
+    def distill_color(self, idx, triplanes, rays_o_unique, dataset,H, W, N_S, n_c):
         rays_o_unique = dataset.poses[:,:3,3].to(self.device)
         c2w = dataset.poses[:,:3,:3].to(self.device)
         batch_size = idx.shape[0]
@@ -442,7 +442,6 @@ class TensorVMSplit(TensorBase):
             # Assign computed colors back to contributing points
             rgb[app_mask] = valid_rgbs #[B,R,3]
             print(valid_rgbs)
-            import ipdb; ipdb.set_trace()
             
         return app_mask
     
@@ -498,55 +497,6 @@ class TensorVMSplit(TensorBase):
             color_gt = self.renderModule(coords, dirs.reshape(-1,3), app_features).reshape(batch_size,ray_size,3)
         loss_func = torch.nn.MSELoss()
         loss_sigma = loss_func(color_chunk[app_mask], color_gt[app_mask])
-        return loss_sigma
-    
-    def distill_color_appfeat(self, idx, triplanes, rays_o_unique,H, W, N_S, n_c):
-        batch_size = idx.shape[0]
-        ray_size = rays_o_unique.shape[0]
-        i = (idx % (H*H)) // H
-        j = (idx % (H*H)) % H
-        k = idx // (H*H)
-        N = (W-N_S)//n_c
-
-        # x_image, y_image, z_image = triplanes[0], triplanes[1], triplanes[2]
-        x_feats = triplanes[0][i]  # Shape: [batch_size, N_S+n_c*3]
-        y_feats = triplanes[1][j]  # Shape: [batch_size, N_S+n_c*3]
-        z_feats = triplanes[2][k]  # Shape: [batch_size, N_S+n_c*3]
-        
-        # Reshape inputs for batch processing
-        x_sigma = x_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
-        y_sigma = y_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
-        z_sigma = z_feats[:,N_S:].reshape(batch_size, n_c, N) # [B, n_c, N]
-        
-        # Compute product across N dimension for all components at once
-        color_coef = torch.einsum('bcn,bcn,bcn->bc', x_sigma, y_sigma, z_sigma) # [B, n_c]
-        # color_coef = color_coef.reshape(batch_size, 3, 9) # [B, 3, 9]
-
-        # # color_coef = torch.zeros((batch_size,n_c), device=x_sigma.device)
-        # # for p in range(n_c):
-        # #     color_coef[:,p] = torch.sum(x_sigma[i,p*N:(p+1)*N]*y_sigma[j,p*N:(p+1)*N]*z_sigma[k,p*N:(p+1)*N], dim=1) # [B,27]
-        # # color_coef = color_coef.reshape(batch_size,3,9) # [B,3,9]        # Subtract each coordinate from all rays to get directions
-        # coords_expanded = self.normalized_coors[i,j,k].reshape(-1,1,3)  # [B,1,3]
-        # rays_expanded = rays_o_unique.reshape(1,-1,3)  # [1,R,3]
-        # dirs = coords_expanded - rays_expanded  # [B,R,3]
-        
-        # dirs = dirs / torch.norm(dirs, dim=-1, keepdim=True)
-        # base_dir = eval_sh_bases(2, dirs.reshape(-1,3)).reshape(batch_size,ray_size,9)  # [B,R,9]
-
-        # # Apply color coefficients
-        # color_chunk = torch.matmul(base_dir, color_coef.permute(0, 2, 1)) # [B,R,3]
-        # color_chunk = torch.sigmoid(color_chunk)
-        # Compute partial outer product for this chunk
-        # sigma_chunk = torch.sum(x_image[i,:N_S]* y_image[j,:N_S]* z_image[k,:N_S], dim=-1)
-        # coords = coords_expanded.repeat(1,ray_size,1).reshape(-1,3)
-        # import ipdb; ipdb.set_trace()
-        with torch.no_grad():
-            app_features = self.compute_appfeature(self.normalized_coors[i,j,k])
-            
-        # print(app_features.min().item(), app_features.max().item())
-            # color_gt = self.renderModule(coords, dirs.reshape(-1,3), app_features).reshape(batch_size,ray_size,3)
-        loss_func = torch.nn.MSELoss()
-        loss_sigma = loss_func(color_coef, app_features)
         return loss_sigma
     
     def calculate_density_block(self, x_basis, y_basis, z_basis, i, j, k, chunk_size, H):
@@ -709,8 +659,6 @@ class TensorVMSplit(TensorBase):
             sigma_chunk = torch.sum(x_feats * y_feats * z_feats, dim=-1)
         except torch.cuda.OutOfMemoryError as e:
             import ipdb; ipdb.set_trace()
-        # for idx, (i, j, k) in enumerate(local_volume_indices):
-        #     sigma_chunk[idx] = torch.sum(x_image[i]* y_image[j]* z_image[k], dim=-1)
 
         return sigma_chunk
     
@@ -1016,7 +964,6 @@ class TensorVMSplit(TensorBase):
             validsigma = self.feature2density(sigma_feature)
             # Assign computed densities back to valid points
             sigma[ray_valid] = validsigma
-            
         # Convert raw density (sigma) to alpha values and compute weights for volume rendering
         alpha, weight, bg_weight = raw2alpha(sigma, dists * self.distance_scale)
 
@@ -1200,6 +1147,48 @@ class TensorVMSplit(TensorBase):
 
         return rgb_map, depth_map # Return final pixel colors and depth values
 
+    def forward_pc(self, idx, rays_o_unique, H, W, white_bg=True, ndc_ray=False, N_samples=-1):
+        k = (idx % (H*H)) // H
+        i = (idx % (H*H)) % H
+        j = idx // (H*H)
+        
+        # import ipdb; ipdb.set_trace()
+        normalized_coors = self.normalized_coors[i,j,k]
+        # # For valid ray points, compute density features and convert to actual density values
+        # if ray_valid.any():
+        # Get density features for valid points
+        sigma_feature = self.compute_densityfeature(normalized_coors) # factorize 3d to plane and line
+        # Convert features to density values 
+        validsigma = self.feature2density(sigma_feature)
+        # Assign computed densities back to valid points
+        # sigma[ray_valid] = validsigma
+
+
+        # For points that contribute significantly, compute RGB colors
+        # Get appearance features
+        batch_size = idx.shape[0]
+        rays_size = rays_o_unique.shape[0]
+        
+        # normalized_coords_expanded = self.normalized_coors[i,j,k].reshape(-1,1,3).repeat(1,rays_size,1).reshape(-1,3)
+        # app_features = self.compute_appfeature(normalized_coords_expanded) #[N,3]
+        
+        # # Render RGB values using the chosen rendering module
+        # coords_expanded = self.coords[i,j,k].reshape(-1,1,3)  # [B,1,3]
+        # rays_expanded = rays_o_unique.reshape(1,-1,3).to(self.device)  # [1,R,3]
+        # dirs = coords_expanded - rays_expanded  # [B,R,3]
+        # dirs = dirs / torch.norm(dirs, dim=-1, keepdim=True)
+        # valid_rgbs = self.renderModule(normalized_coords_expanded, dirs.reshape(-1,3), app_features) #[N,3]
+        # valid_rgbs = valid_rgbs.reshape(-1,rays_size,3).mean(dim=1)
+        
+        # import ipdb; ipdb.set_trace()
+        app_features = self.compute_appfeature(normalized_coors)
+        dirs = self.coords[i,j,k] - rays_o_unique[0,:].to(self.device)
+        dirs = dirs / torch.norm(dirs, dim=-1, keepdim=True)
+        valid_rgbs = self.renderModule(normalized_coors, dirs, app_features)
+        points = self.coords[i,j,k].reshape(-1,3)
+
+        return validsigma, valid_rgbs, points
+    
 class TensorCP(TensorBase):
     def __init__(self, aabb, gridSize, device, **kargs):
         super(TensorCP, self).__init__(aabb, gridSize, device, **kargs)

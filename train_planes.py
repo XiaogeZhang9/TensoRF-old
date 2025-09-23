@@ -80,6 +80,7 @@ def render_test(args):
     triplanes = torch.nn.ParameterList([
         torch.nn.Parameter(torch.randn((args.H, args.W), device=device, requires_grad=True)) for _ in range(3)
     ])
+    logfolder = os.path.dirname(args.ckpt)
     if args.ckpt_tri_density is not None:
         triplanes_density = torch.load(args.ckpt_tri_density, map_location=device)
         triplanes = torch.nn.ParameterList([
@@ -111,6 +112,8 @@ def render_test(args):
                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=-1, N_samples=-1, prtx='0_',
                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         
+        # evaluation_pc(test_dataset,tensorf, args, args.H, args.W, f'{logfolder}/imgs_test_all/',
+        #                         N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         # evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_test_all/',
         #                         N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         print(f'======> {args.ckpt_tri.split("/")[-2]} test all psnr: {np.mean(PSNRs_test)} <========================')
@@ -258,13 +261,14 @@ def reconstruction(args):
     #     summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
     #     summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
     while True:
+        # find unique camera poses
         ray_idx = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
         rays_o_unique = torch.unique(rays_train[:, :3], dim=0).to(device)
         if rays_o_unique.shape[0] == 100:
             break
     for iteration in pbar:
-        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Planes"):
+        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Colors"):
             optimizer.zero_grad()
             loss_sigma = tensorf.distill_color_sh(batch, triplanes, rays_o_unique, train_dataset,H=args.H, W=args.W, N_S=args.N_S, n_c=27)
             loss_sigma.backward()

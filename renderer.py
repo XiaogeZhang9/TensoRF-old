@@ -33,8 +33,39 @@ def OctreeRender_trilinear_fast_distill(rays, tensorf, triplanes, N_S, n_c, chun
     return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
 
 @torch.no_grad()
+def evaluation_pc(test_dataset,tensorf, args, H, W, savePath=None, N_vis=5, prtx='', N_samples=-1,
+               white_bg=False, ndc_ray=False, device='cuda'):
+    PSNRs, rgb_maps, depth_maps = [], [], []
+    ssims,l_alex,l_vgg=[],[],[]
+    os.makedirs(savePath, exist_ok=True)
+    os.makedirs(savePath+"/rgbd", exist_ok=True)
+
+    try:
+        tqdm._instances.clear()
+    except Exception:
+        pass
+
+    near_far = test_dataset.near_far
+    img_eval_interval = 1 if N_vis < 0 else max(test_dataset.all_rays.shape[0] // N_vis,1)
+    idxs = list(range(0, test_dataset.all_rays.shape[0], img_eval_interval))
+    from dataLoader.tankstemple import DistillPlane
+    planedataset = DistillPlane(shape=(H,H,H), N_S=args.N_S, n_c=27)
+    dataloader = torch.utils.data.DataLoader(planedataset, batch_size=args.batch_size, shuffle=True)
+    rays_o_unique = test_dataset.poses[:, :3, 3]
+    sigmas, rgbs = [], []
+    for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Extracting PC"):
+        sigma, rgb, point = tensorf.forward_pc(batch, rays_o_unique, H, W, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+        # print(point.shape, rgb.shape, sigma.shape)
+        chunks = torch.cat([point, rgb, sigma.unsqueeze(-1)], dim=-1)
+        with open(f'{savePath}/{prtx}points.txt', 'a') as f:
+            np.savetxt(f, chunks.cpu().numpy().astype(np.float32))
+        # import ipdb; ipdb.set_trace()
+        torch.cuda.empty_cache()
+    return 
+
+@torch.no_grad()
 def evaluation(test_dataset,tensorf, args, renderer, savePath=None, N_vis=5, prtx='', N_samples=-1,
-               white_bg=False, ndc_ray=False, compute_extra_metrics=True, device='cuda'):
+               white_bg=False, ndc_ray=False, compute_extra_metrics=True, device='cuda', save_img=False):
     PSNRs, rgb_maps, depth_maps = [], [], []
     ssims,l_alex,l_vgg=[],[],[]
     os.makedirs(savePath, exist_ok=True)
@@ -77,7 +108,7 @@ def evaluation(test_dataset,tensorf, args, renderer, savePath=None, N_vis=5, prt
         # rgb_map = np.concatenate((rgb_map, depth_map), axis=1)
         # rgb_maps.append(rgb_map)
         # depth_maps.append(depth_map)
-        if savePath is not None:
+        if save_img:
             imageio.imwrite(f'{savePath}/{prtx}{idx:03d}.png', rgb_map)
             rgb_map = np.concatenate((rgb_map, depth_map), axis=1)
             imageio.imwrite(f'{savePath}/rgbd/{prtx}{idx:03d}.png', rgb_map)

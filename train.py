@@ -63,11 +63,12 @@ def render_test(args):
 
     ckpt = torch.load(args.ckpt, map_location=device)
     kwargs = ckpt['kwargs']
-
     kwargs.update({'device': device})
+    kwargs.update({'H':args.H})
+    kwargs.update({'W':args.W})
     tensorf = eval(args.model_name)(**kwargs)
     tensorf.load(ckpt)
-
+    
     logfolder = os.path.dirname(args.ckpt)
     if args.render_train:
         os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
@@ -78,8 +79,8 @@ def render_test(args):
 
     if args.render_test:
         os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
-        evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_test_all/',
-                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
+        # evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_test_all/',
+        #                         N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
 
     if args.render_path:
         c2ws = test_dataset.render_path
@@ -234,11 +235,15 @@ def reconstruction(args):
             )
             PSNRs = []
 
-        if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
-            PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=args.N_vis,
-                                    prtx=f'{iteration:06d}_', N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False)
+        if iteration % args.test_every == args.test_every - 1:
+            if iteration % args.save_every == args.save_every - 1:
+                PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=-1,
+                        prtx=f'{iteration:06d}_', N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False, save_img=True)
+                tensorf.save(f'{logfolder}/{iteration//args.save_every*10:03d}.pt')
+            else:
+                PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=-1,
+                        prtx=f'{iteration:06d}_', N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False, save_img=False)
             summary_writer.add_scalar('test/psnr', np.mean(PSNRs_test), global_step=iteration)
-            tensorf.save(f'{logfolder}/{iteration//args.vis_every*2:03d}.pt')
             if np.mean(PSNRs_test) > best_psnr:
                 best_psnr = np.mean(PSNRs_test)
                 tensorf.save(f'{logfolder}/best.pt')
