@@ -6,32 +6,6 @@ from utils import *
 from dataLoader.ray_utils import ndc_rays_blender
 
 
-def OctreeRender_trilinear_fast(rays, tensorf, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
-
-    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
-    N_rays_all = rays.shape[0]
-    for chunk_idx in range(N_rays_all // chunk + int(N_rays_all % chunk > 0)):
-        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
-        rgb_map, depth_map = tensorf(rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
-
-        rgbs.append(rgb_map)
-        depth_maps.append(depth_map)
-    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
-
-def OctreeRender_trilinear_fast_distill(rays, tensorf, triplanes, N_S, n_c, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
-    from tqdm import trange
-    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
-    N_rays_all = rays.shape[0]
-    for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
-        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
-        with torch.no_grad():
-            rgb_map, depth_map = tensorf.forward_distill_color_sh(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
-      
-        rgbs.append(rgb_map)
-        depth_maps.append(depth_map)
-        torch.cuda.empty_cache()
-    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
-
 @torch.no_grad()
 def evaluation_pc(test_dataset,tensorf, args, H, W, savePath=None, N_vis=5, prtx='', N_samples=-1,
                white_bg=False, ndc_ray=False, device='cuda'):

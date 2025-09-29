@@ -144,6 +144,10 @@ def config_parser(cmd=None):
                         help='width of the image')
     parser.add_argument("--N_S", type=int, default=206,
                         help='number of samples')
+    parser.add_argument("--distill_color", type=bool, default=True,
+                        help='distill color')
+    parser.add_argument("--distill_sigma", type=bool, default=True,
+                        help='distill sigma')
     if cmd is not None:
         return parser.parse_args(cmd)
     else:

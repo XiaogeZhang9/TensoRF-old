@@ -6,7 +6,9 @@ from opt import config_parser
 
 
 import json, random
-from renderer import *
+from renderer import evaluation_distill, evaluation, evaluation_path
+from models.tensoRF import TensorVM, TensorCP, raw2alpha, TensorVMSplit, AlphaGridMask
+
 from utils import *
 from torch.utils.tensorboard import SummaryWriter
 import datetime
@@ -14,12 +16,65 @@ from dataLoader.tankstemple import DistillPlane
 from dataLoader import dataset_dict
 import sys
 import shutil
+import torch
+from tqdm import trange
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #renderer = OctreeRender_trilinear_fast_distill
+def OctreeRender_trilinear_fast(rays, tensorf, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
 
+    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
+    N_rays_all = rays.shape[0]
+    for chunk_idx in range(N_rays_all // chunk + int(N_rays_all % chunk > 0)):
+        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
+        rgb_map, depth_map = tensorf(rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+
+        rgbs.append(rgb_map)
+        depth_maps.append(depth_map)
+    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
+
+def OctreeRender_trilinear_fast_distill_sigma(rays, tensorf, triplanes, N_S, n_c, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
+    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
+    N_rays_all = rays.shape[0]
+    for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
+        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
+        with torch.no_grad():
+            rgb_map, depth_map = tensorf.forward_distill_sigma(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+      
+        rgbs.append(rgb_map)
+        depth_maps.append(depth_map)
+        torch.cuda.empty_cache()
+    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
+
+def OctreeRender_trilinear_fast_distill_color_sh(rays, tensorf, triplanes, N_S, n_c, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
+    from tqdm import trange
+    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
+    N_rays_all = rays.shape[0]
+    for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
+        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
+        with torch.no_grad():
+            rgb_map, depth_map = tensorf.forward_distill_color_sh(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+      
+        rgbs.append(rgb_map)
+        depth_maps.append(depth_map)
+        torch.cuda.empty_cache()
+    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
+
+def OctreeRender_trilinear_fast_distill(rays, tensorf, triplanes, N_S, n_c, chunk=4096, N_samples=-1, ndc_ray=False, white_bg=True, is_train=False, device='cuda'):
+    from tqdm import trange
+    rgbs, alphas, depth_maps, weights, uncertainties = [], [], [], [], []
+    N_rays_all = rays.shape[0]
+    for chunk_idx in trange(N_rays_all // chunk + int(N_rays_all % chunk > 0), total=N_rays_all // chunk + int(N_rays_all % chunk > 0), desc="Rendering"):
+        rays_chunk = rays[chunk_idx * chunk:(chunk_idx + 1) * chunk].to(device)
+        with torch.no_grad():
+            rgb_map, depth_map = tensorf.forward_distill(triplanes, N_S, n_c, rays_chunk, is_train=is_train, white_bg=white_bg, ndc_ray=ndc_ray, N_samples=N_samples)
+      
+        rgbs.append(rgb_map)
+        depth_maps.append(depth_map)
+        torch.cuda.empty_cache()
+    return torch.cat(rgbs), None, torch.cat(depth_maps), None, None
 
 class SimpleSampler:
     def __init__(self, total, batch):
@@ -80,7 +135,7 @@ def render_test(args):
     triplanes = torch.nn.ParameterList([
         torch.nn.Parameter(torch.randn((args.H, args.W), device=device, requires_grad=True)) for _ in range(3)
     ])
-    logfolder = os.path.dirname(args.ckpt)
+    logfolder = ''
     if args.ckpt_tri_density is not None:
         triplanes_density = torch.load(args.ckpt_tri_density, map_location=device)
         triplanes = torch.nn.ParameterList([
@@ -98,18 +153,20 @@ def render_test(args):
     if args.ckpt_tri is not None:
         triplanes_loaded = torch.load(args.ckpt_tri, map_location=device)
         triplanes = torch.nn.ParameterList([torch.nn.Parameter(triplanes_loaded[i]) for i in range(len(triplanes_loaded))])
-        
+        logfolder = os.path.dirname(args.ckpt_tri)
     if args.render_train:
-        os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
+        os.makedirs(f'{logfolder}/imgs_train', exist_ok=True)
         train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=True)
-        PSNRs_test = evaluation(test_dataset,tensorf, args, OctreeRender_trilinear_fast, f'{logfolder}/imgs_train_all/',
-                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
+        PSNRs_test = evaluation_distill(train_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27,
+                                    savePath=f'{logfolder}/imgs_train/', N_vis=-1, N_samples=-1, 
+                                    white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         print(f'======> {args.ckpt_tri.split("/")[-2]} train all psnr: {np.mean(PSNRs_test)} <========================')
 
-    if args.render_test:
-        os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
+    if args.render_test:    
+        os.makedirs(f'{logfolder}/imgs_test', exist_ok=True)
+        
         PSNRs_test = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
-                                savePath=f'{logfolder}/imgs_test_all/', N_vis=-1, N_samples=-1, prtx='0_',
+                                savePath=f'{logfolder}/imgs_test/', N_vis=-1, N_samples=-1, prtx='0_',
                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device)
         
         # evaluation_pc(test_dataset,tensorf, args, args.H, args.W, f'{logfolder}/imgs_test_all/',
@@ -120,7 +177,7 @@ def render_test(args):
     if args.render_path:
         c2ws = test_dataset.render_path
         os.makedirs(f'{logfolder}/imgs_path_all', exist_ok=True)
-        evaluation_path(test_dataset,tensorf, c2ws, OctreeRender_trilinear_fast, f'{logfolder}/imgs_path_all/',
+        evaluation_path(test_dataset,tensorf, c2ws, OctreeRender_trilinear_fast_distill, f'{logfolder}/imgs_path_all/',
                                 N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
 
 def reconstruction(args):
@@ -147,9 +204,6 @@ def reconstruction(args):
 
     # init log file
     os.makedirs(logfolder, exist_ok=True)
-    os.makedirs(f'{logfolder}/imgs_vis', exist_ok=True)
-    os.makedirs(f'{logfolder}/imgs_rgba', exist_ok=True)
-    os.makedirs(f'{logfolder}/rgba', exist_ok=True)
     summary_writer = SummaryWriter(logfolder)
 
     copy_code(logfolder, args.config)
@@ -233,33 +287,13 @@ def reconstruction(args):
     #                                 savePath=f'{logfolder}/imgs_test_all/', N_vis=args.N_vis, N_samples=nSamples, 
     #                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{args.ckpt_tri.split(".")[0].split("_")[-1]}_')
     # print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
-    optimizer = torch.optim.Adam(triplanes, betas=(0.9, 0.99), lr=args.lr_init)
+    optimizer_sigma = torch.optim.Adam(triplanes, betas=(0.9, 0.99), lr=args.lr_init)
+    optimizer_color = torch.optim.Adam(triplanes, betas=(0.9, 0.99), lr=args.lr_init)
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
     planedataset = DistillPlane(shape=(args.H,args.H,args.H), N_S=args.N_S, n_c=27)
     # planedataset = torch.utils.data.Subset(planedataset, range(1000000))
     dataloader = torch.utils.data.DataLoader(planedataset, batch_size=args.batch_size, shuffle=True)
     dataloader_ordered = torch.utils.data.DataLoader(planedataset, batch_size=args.batch_size, shuffle=False)
-    # for iteration in pbar:
-    #     for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Planes"):
-    #         loss_sigma = tensorf.distill_density_total(batch, triplanes, H=args.H, W=args.W, N_S=args.N_S, n_c=27)
-    #         optimizer.zero_grad()
-    #         loss_sigma.backward()
-    #         optimizer.step()
-    #         # Save triplanes state
-    #         triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
-    #     summary_writer.add_scalar('train/loss_density', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
-    #     summary_writer.add_scalar('train/grad', triplanes[0].grad.mean().item(), global_step=idx+iteration*len(dataloader))
-    #     initial_values = [p.data.max().item() for p in triplanes]
-    #     print(f"Initial triplane mean values: {initial_values}")        
-        
-    #     torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
-    #     PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
-    #                                 savePath=f'{logfolder}/imgs_train_all/', N_vis=args.N_vis, N_samples=nSamples, 
-    #                                 white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
-    #     summary_writer.add_scalar('eval/psnr', np.mean(PSNRs), global_step=iteration)
-    #     summary_writer.add_scalar('eval/ssim', np.mean(ssim), global_step=iteration)
-    #     summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
-    #     summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
     while True:
         # find unique camera poses
         ray_idx = trainingSampler.nextids()
@@ -268,70 +302,67 @@ def reconstruction(args):
         if rays_o_unique.shape[0] == 100:
             break
     for iteration in pbar:
-        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Colors"):
-            optimizer.zero_grad()
-            loss_sigma = tensorf.distill_color_sh(batch, triplanes, rays_o_unique, train_dataset,H=args.H, W=args.W, N_S=args.N_S, n_c=27)
-            loss_sigma.backward()
-            optimizer.step()
-            # Save triplanes state
-            triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
-            summary_writer.add_scalar('train/loss_color', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
+        if args.distill_sigma:
+            for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Sigmas"):
+                loss_sigma = tensorf.distill_density_total(batch, triplanes, H=args.H, W=args.W, N_S=args.N_S, n_c=27)
+                optimizer_sigma.zero_grad()
+                loss_sigma.backward()
+                optimizer_sigma.step()
+                # Save triplanes state
+                triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
+            summary_writer.add_scalar('train/loss_density', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
             summary_writer.add_scalar('train/grad', triplanes[0].grad.mean().item(), global_step=idx+iteration*len(dataloader))
-        initial_values = [p.data.mean().item() for p in triplanes]
-        print(f"Initial triplane mean values: {initial_values}")  
-        summary_writer.add_scalar('train/x', triplanes[0].data.mean().item(), global_step=(iteration+1)*len(dataloader))      
-        summary_writer.add_scalar('train/y', triplanes[1].data.mean().item(), global_step=(iteration+1)*len(dataloader))
-        summary_writer.add_scalar('train/z', triplanes[2].data.mean().item(), global_step=(iteration+1)*len(dataloader))
-        best_psnr = 0
-        if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
-        #     color_chunks = []
-        #     color_gts = []
-        #     with torch.no_grad():
-        #         print(dataloader_ordered)
-        #         for idx, batch in tqdm(enumerate(dataloader_ordered), total=len(dataloader_ordered), desc="Distilling Planes"):
-        #             loss_sigma, color_chunk, color_gt = tensorf.distill_color_total(batch, triplanes, rays_o_unique, train_dataset,H=args.H, W=args.W, N_S=args.N_S, n_c=27)
-        #             color_chunks.append(color_chunk[:,19,:].detach().cpu())
-        #             color_gts.append(color_gt[:,19,:].detach().cpu())
-        #         import ipdb; ipdb.set_trace()
-        #         color_chunks = torch.cat(color_chunks, dim=0).detach().cpu().numpy()
-        #         color_gts = torch.cat(color_gts, dim=0).detach().cpu().numpy()
-        #         import open3d as o3d
-        #         coords = tensorf.coords.reshape(-1,3)[::256].detach().cpu().numpy()
-        #         pred = o3d.geometry.PointCloud()
-        #         pred.points = o3d.utility.Vector3dVector(coords)
-        #         pred.colors = o3d.utility.Vector3dVector(color_chunks)
-        #         o3d.io.write_point_cloud(f'{logfolder}/color_chunks_full_{iteration:03d}.ply', pred)
-        #         gt = o3d.geometry.PointCloud()
-        #         gt.points = o3d.utility.Vector3dVector(coords)
-        #         gt.colors = o3d.utility.Vector3dVector(color_gts)
-        #         o3d.io.write_point_cloud(f'{logfolder}/color_gts_full_{iteration:03d}.ply', gt)
-        #         pred = color_chunks.reshape(-1,3)
-        #         import matplotlib.pyplot as plt
-        #         plt.subplot(2,3,1)
-        #         plt.hist(pred[:,0], bins=100)
-        #         plt.subplot(2,3,2)
-        #         plt.hist(pred[:,1], bins=100)
-        #         plt.subplot(2,3,3)
-        #         plt.hist(pred[:,2], bins=100)
-        #         gt = color_gts.reshape(-1,3)
-        #         plt.subplot(2,3,4)
-        #         plt.hist(gt[:,0], bins=100)
-        #         plt.subplot(2,3,5)
-        #         plt.hist(gt[:,1], bins=100)
-        #         plt.subplot(2,3,6)
-        #         plt.hist(gt[:,2], bins=100)
-        #         plt.savefig(f'/media/UNIWA\23903981/Data/onedrive/a-paper3/dist_color.png')
-            torch.save(triplanes_state, f'{logfolder}/triplanes_{iteration:03d}.pt')
-            PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
-                                        savePath=f'{logfolder}/imgs_train_all/', N_vis=args.N_vis, N_samples=nSamples, 
-                                        white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
-            summary_writer.add_scalar('eval/psnr', np.mean(PSNRs), global_step=iteration)
-            summary_writer.add_scalar('eval/ssim', np.mean(ssim), global_step=iteration)
-            summary_writer.add_scalar('eval/l_a', np.mean(l_a), global_step=iteration)
-            summary_writer.add_scalar('eval/l_v', np.mean(l_v), global_step=iteration)
+            initial_values = [p.data.max().item() for p in triplanes]
+            print(f"Initial triplane mean values: {initial_values}")        
+            if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
+                torch.save(triplanes_state, f'{logfolder}/triplanes_sigma_{iteration:03d}.pt')
+            # PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill_sigma, triplanes, N_S=args.N_S, n_c=27, 
+            #                             savePath=f'{logfolder}/imgs_test_sigma/', N_vis=args.N_vis, N_samples=nSamples, 
+            #                             white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
+            # summary_writer.add_scalar('eval/psnr_sigma', np.mean(PSNRs), global_step=iteration)
+            # summary_writer.add_scalar('eval/ssim_sigma', np.mean(ssim), global_step=iteration)
+            # summary_writer.add_scalar('eval/l_a_sigma', np.mean(l_a), global_step=iteration)
+            # summary_writer.add_scalar('eval/l_v_sigma', np.mean(l_v), global_step=iteration)
+            best_psnr = 0
             if np.mean(PSNRs) > best_psnr:
                 best_psnr = np.mean(PSNRs)
-                torch.save(triplanes_state, f'{logfolder}/triplanes_best.pt')
+                torch.save(triplanes_state, f'{logfolder}/triplanes_sigma_best.pt')
+                
+        if args.distill_color:
+            for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc="Distilling Colors"):
+                optimizer_color.zero_grad()
+                loss_sigma = tensorf.distill_color_sh(batch, triplanes, rays_o_unique, train_dataset,H=args.H, W=args.W, N_S=args.N_S, n_c=27)
+                loss_sigma.backward()
+                optimizer_color.step()
+                # Save triplanes state
+                triplanes_state = [p.data.clone() for p in triplanes] # Clone to avoid memory issues
+                summary_writer.add_scalar('train/loss_color', loss_sigma.detach().item(), global_step=idx+iteration*len(dataloader))
+                summary_writer.add_scalar('train/grad', triplanes[0].grad.mean().item(), global_step=idx+iteration*len(dataloader))
+            initial_values = [p.data.mean().item() for p in triplanes]
+            print(f"Initial triplane mean values: {initial_values}")  
+            summary_writer.add_scalar('train/x', triplanes[0].data.mean().item(), global_step=(iteration+1)*len(dataloader))      
+            summary_writer.add_scalar('train/y', triplanes[1].data.mean().item(), global_step=(iteration+1)*len(dataloader))
+            summary_writer.add_scalar('train/z', triplanes[2].data.mean().item(), global_step=(iteration+1)*len(dataloader))
+            if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
+                torch.save(triplanes_state, f'{logfolder}/triplanes_color_{iteration:03d}.pt')
+            PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill_color_sh, triplanes, N_S=args.N_S, n_c=27, 
+                                        savePath=f'{logfolder}/imgs_test_color/', N_vis=args.N_vis, N_samples=nSamples, 
+                                        white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
+            summary_writer.add_scalar('eval/psnr_color', np.mean(PSNRs), global_step=iteration)
+            summary_writer.add_scalar('eval/ssim_color', np.mean(ssim), global_step=iteration)
+            summary_writer.add_scalar('eval/l_a_color', np.mean(l_a), global_step=iteration)
+            summary_writer.add_scalar('eval/l_v_color', np.mean(l_v), global_step=iteration)
+            PSNRs, ssim, l_a, l_v = evaluation_distill(test_dataset,tensorf, args, OctreeRender_trilinear_fast_distill, triplanes, N_S=args.N_S, n_c=27, 
+                            savePath=f'{logfolder}/imgs_test_all/', N_vis=args.N_vis, N_samples=nSamples, 
+                            white_bg = white_bg, ndc_ray=ndc_ray,device=device, prtx=f'{iteration:04d}_', is_train=True)
+            summary_writer.add_scalar('eval/psnr_total', np.mean(PSNRs), global_step=iteration)
+            summary_writer.add_scalar('eval/ssim_total', np.mean(ssim), global_step=iteration)
+            summary_writer.add_scalar('eval/l_a_total', np.mean(l_a), global_step=iteration)
+            summary_writer.add_scalar('eval/l_v_total', np.mean(l_v), global_step=iteration)
+            best_psnr = 0
+            if np.mean(PSNRs) > best_psnr:
+                best_psnr = np.mean(PSNRs)
+                torch.save(triplanes_state, f'{logfolder}/triplanes_color_best.pt')
 
 if __name__ == '__main__':
 
